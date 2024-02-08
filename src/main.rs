@@ -1,6 +1,7 @@
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{bail, format_err, Context as _, Error};
 use futures::stream::StreamExt;
@@ -9,6 +10,7 @@ use openssl::ssl::{SslConnector, SslMethod};
 use proxmox_fuse::Fuse;
 
 mod esxi;
+mod fs;
 mod vmx;
 
 use esxi::EsxiClient;
