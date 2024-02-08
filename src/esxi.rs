@@ -1,4 +1,5 @@
 use std::fmt;
+use std::ops::Range;
 
 use anyhow::{bail, format_err, Context as _, Error};
 use http::Request;
@@ -39,17 +40,49 @@ impl EsxiClient {
         datastore: &str,
         path: &str,
     ) -> Result<hyper::body::Bytes, Error> {
+        self.download(datacenter, datastore, path, None).await
+    }
+
+    /// Download a range from a file.
+    pub async fn download_range(
+        &self,
+        datacenter: &str,
+        datastore: &str,
+        path: &str,
+        range: Range<u64>,
+    ) -> Result<hyper::body::Bytes, Error> {
+        self.download(datacenter, datastore, path, Some(range))
+            .await
+    }
+
+    /// Download a range from a file.
+    pub async fn download(
+        &self,
+        datacenter: &str,
+        datastore: &str,
+        path: &str,
+        range: Option<Range<u64>>,
+    ) -> Result<hyper::body::Bytes, Error> {
         let datacenter = percent_encode(datacenter.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
         let datastore = percent_encode(datastore.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
         let path = percent_encode(path.as_bytes(), &QUERY_ESC);
 
-        let req = Request::get(format!(
+        let mut req = Request::get(format!(
             "{}/{path}?dcName={datacenter}&dsName={datastore}",
             self.folder_url
         ))
-        .header("authorization", &self.auth_header)
-        .body(Body::empty())
-        .context("failed to build http request")?;
+        .header("authorization", &self.auth_header);
+
+        if let Some(range) = range {
+            req = req.header(
+                "range",
+                &format!("bytes={}-{}", range.start, range.end.saturating_sub(1)),
+            )
+        }
+
+        let req = req
+            .body(Body::empty())
+            .context("failed to build http request")?;
 
         let (parts, body) = self
             .client
