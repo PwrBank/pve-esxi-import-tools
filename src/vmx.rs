@@ -55,7 +55,7 @@ impl VmConfig {
             } else if key == "displayName" {
                 self.display_name = value.to_string();
             } else if let Some(cap) = disk_re.captures(key) {
-                let kind = cap.get(0).unwrap();
+                let kind = cap.get(1).unwrap();
                 if self.disks.contains_key(kind.as_str()) {
                     bail!(
                         "vm config contains multiple entries for '{}'",
