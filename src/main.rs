@@ -1,4 +1,5 @@
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use anyhow::{bail, format_err, Context as _, Error};
@@ -12,31 +13,80 @@ mod vmx;
 
 use esxi::EsxiClient;
 
+struct Args {
+    url: String,
+    user: String,
+    password: String,
+    datacenter: String,
+    datastore: String,
+    config_file: String,
+}
+
+impl Args {
+    fn from_vec(arg0: &OsStr, args: Vec<OsString>) -> Self {
+        use std::io::Write as _;
+
+        let err = match Self::from_vec_do(args) {
+            Ok(this) => return this,
+            Err(err) => err,
+        };
+
+        eprintln!("error: {err}");
+
+        let _ = std::io::stderr().write_all(b"usage: ");
+        let _ = std::io::stderr().write_all(arg0.as_bytes());
+        eprintln!(" <baseurl> <user> <password> <datacenter> <datastore> <vm-config-file-path>");
+
+        std::process::exit(1);
+    }
+
+    fn from_vec_do(args: Vec<OsString>) -> Result<Self, Error> {
+        let mut args = args.into_iter();
+        let mut next = || {
+            let arg = args
+                .next()
+                .ok_or_else(|| format_err!("missing parameter"))?;
+            arg.into_string()
+                .map_err(|_| format_err!("non utf-8 parameter"))
+        };
+
+        let this = Self {
+            url: next()?,
+            user: next()?,
+            password: next()?,
+            datacenter: next()?,
+            datastore: next()?,
+            config_file: next()?,
+        };
+
+        if args.next().is_some() {
+            bail!("too many parameters");
+        }
+
+        Ok(this)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let mut args = std::env::args_os().skip(1);
+    let mut args = std::env::args_os();
+    let arg0 = args.next().unwrap();
 
-    let path = args
-        .next()
-        .ok_or_else(|| format_err!("missing path parameter"))?;
-
-    if args.next().is_some() {
-        bail!("too many parameters");
-    }
+    let args = args.collect::<Vec<_>>();
+    let args = Args::from_vec(&arg0, args);
 
     let mut connector = SslConnector::builder(SslMethod::tls()).unwrap();
     connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
     let connector = connector.build();
 
-    let reader = EsxiClient::new("https://10.9.2.70", "root", "asdf1234!", connector);
+    let reader = EsxiClient::new(&args.url, &args.user, &args.password, connector);
 
     let config = reader
-        .download_file("ha-datacenter", "datastore1", "Test/Test.vmx")
+        .download_file(&args.datacenter, &args.datastore, &args.config_file)
         .await?;
-    {
-        use std::io::Write as _;
-        std::io::stdout().write_all(&config)?;
-    }
+
+    let config = vmx::VmConfig::parse(&config)?;
+    println!("{config:#?}");
 
     // run_fuse(path).await?;
 

@@ -4,9 +4,11 @@ use anyhow::{bail, format_err, Context as _, Error};
 use http::Request;
 use hyper::Body;
 use openssl::ssl::SslConnector;
-use percent_encoding::percent_encode;
+use percent_encoding::{percent_encode, AsciiSet};
 
 use proxmox_http::client::Client;
+
+const QUERY_ESC: AsciiSet = percent_encoding::CONTROLS.add(b'?');
 
 pub struct EsxiClient {
     client: Client,
@@ -39,7 +41,7 @@ impl EsxiClient {
     ) -> Result<hyper::body::Bytes, Error> {
         let datacenter = percent_encode(datacenter.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
         let datastore = percent_encode(datastore.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
-        let path = percent_encode(path.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
+        let path = percent_encode(path.as_bytes(), &QUERY_ESC);
 
         let req = Request::get(format!(
             "{}/{path}?dcName={datacenter}&dsName={datastore}",
