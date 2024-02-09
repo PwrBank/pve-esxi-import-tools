@@ -160,7 +160,7 @@ async fn run_fuse(path: OsString, fs: Arc<fs::Fs>) -> Result<(), Error> {
         .context("failed to create fuse session builder")?
         .enable_open()
         .enable_read()
-        .enable_readdir()
+        .enable_readdirplus()
         .build()
         .context("failed to create fuse session")?
         .mount(Path::new(&path))

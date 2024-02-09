@@ -91,13 +91,13 @@ impl Fs {
             Request::Getattr(r) => self.handle_getattr(r).await,
             Request::Forget(r) => self.handle_forget(r),
             Request::Lookup(r) => self.handle_lookup(r).await,
-            Request::Readdir(r) => self.handle_readdir(r).await,
+            Request::ReaddirPlus(r) => self.handle_readdir(r).await,
             _ => todo!("unhandled request: {request:?}"),
         };
 
         match res {
             Ok(()) => (),
-            Err(err) => eprintln!("error handling request: {err:?}"),
+            Err(err) => log::error!("error handling request: {err:?}"),
         }
     }
 
@@ -160,7 +160,7 @@ impl Fs {
         }
     }
 
-    async fn handle_readdir(self: Arc<Self>, readdir: requests::Readdir) -> Result<(), Error> {
+    async fn handle_readdir(self: Arc<Self>, readdir: requests::ReaddirPlus) -> Result<(), Error> {
         if readdir.inode == ROOT_ID {
             return self.root.handle_readdir(readdir);
         }
@@ -234,7 +234,7 @@ impl Inode {
         })
     }
 
-    fn handle_readdir(&self, readdir: requests::Readdir) -> Result<(), Error> {
+    fn handle_readdir(&self, readdir: requests::ReaddirPlus) -> Result<(), Error> {
         match self {
             Self::Datacenter(dc) => dc.handle_readdir(readdir),
             Self::Dir(dir) => dir.handle_readdir(readdir),
@@ -304,7 +304,7 @@ impl Root {
         dir_stat(ROOT_ID)
     }
 
-    fn handle_readdir(&self, mut readdir: requests::Readdir) -> Result<(), Error> {
+    fn handle_readdir(&self, mut readdir: requests::ReaddirPlus) -> Result<(), Error> {
         let datacenters = self.datacenters.lock().unwrap();
 
         for (count, (name, inode)) in datacenters.iter().skip(readdir.offset as usize).enumerate() {
@@ -312,7 +312,10 @@ impl Root {
                 .add_entry(
                     name.as_ref(),
                     &dir_stat(*inode),
-                    readdir.offset as isize + count as isize,
+                    readdir.offset as isize + count as isize + 1,
+                    1,
+                    TIMEOUT,
+                    TIMEOUT,
                 )?
                 .is_full()
             {
@@ -394,7 +397,7 @@ impl Datacenter {
         forget.reply();
     }
 
-    fn handle_readdir(&self, mut readdir: requests::Readdir) -> Result<(), Error> {
+    fn handle_readdir(&self, mut readdir: requests::ReaddirPlus) -> Result<(), Error> {
         let datastores = self.datastores.lock().unwrap();
 
         for (count, (name, inode)) in datastores.iter().skip(readdir.offset as usize).enumerate() {
@@ -402,7 +405,10 @@ impl Datacenter {
                 .add_entry(
                     name.as_ref(),
                     &dir_stat(*inode),
-                    readdir.offset as isize + count as isize,
+                    readdir.offset as isize + count as isize + 1,
+                    1,
+                    TIMEOUT,
+                    TIMEOUT,
                 )?
                 .is_full()
             {
@@ -570,7 +576,7 @@ impl Dir {
         dir_stat(self.inode)
     }
 
-    fn handle_readdir(&self, mut readdir: requests::Readdir) -> Result<(), Error> {
+    fn handle_readdir(&self, mut readdir: requests::ReaddirPlus) -> Result<(), Error> {
         let skip = readdir.offset;
         let mut at = 0i64;
 
@@ -588,7 +594,14 @@ impl Dir {
             }
 
             if readdir
-                .add_entry(name.as_ref(), &entry.stat(), at as isize)?
+                .add_entry(
+                    name.as_ref(),
+                    &entry.stat(),
+                    at as isize,
+                    1,
+                    TIMEOUT,
+                    TIMEOUT,
+                )?
                 .is_full()
             {
                 break;
