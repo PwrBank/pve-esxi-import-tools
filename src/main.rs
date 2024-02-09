@@ -88,26 +88,13 @@ async fn main() -> Result<(), Error> {
         connector,
     ));
 
-    let mut file = tokio::io::BufReader::new(
+    let config = vmx::VmConfig::parse(
         reader
             .open_file(&args.datacenter, &args.datastore, &args.config_file)
             .await?,
-    );
-    loop {
-        use tokio::io::AsyncBufReadExt;
-        let mut s = String::new();
-        file.read_line(&mut s).await?;
-        if s.is_empty() {
-            break;
-        }
-        print!("=> {s}");
-    }
+    )
+    .await?;
 
-    let config = reader
-        .download_file(&args.datacenter, &args.datastore, &args.config_file)
-        .await?;
-
-    let config = vmx::VmConfig::parse(&config)?;
     println!("{config:#?}");
 
     // run_fuse(path).await?;
