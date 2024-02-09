@@ -92,6 +92,7 @@ impl Fs {
             Request::Forget(r) => self.handle_forget(r),
             Request::Lookup(r) => self.handle_lookup(r).await,
             Request::ReaddirPlus(r) => self.handle_readdir(r).await,
+            Request::Read(r) => self.handle_read(r).await,
             _ => todo!("unhandled request: {request:?}"),
         };
 
@@ -174,6 +175,21 @@ impl Fs {
             Some(entry) => entry.handle_readdir(readdir),
         }
     }
+
+    async fn handle_read(self: Arc<Self>, read: requests::Read) -> Result<(), Error> {
+        if read.inode == ROOT_ID {
+            return Ok(read.fail(libc::EISDIR)?);
+        }
+
+        let entry = self.fs.inodes.lock().unwrap().get(&read.inode).cloned();
+        match entry {
+            None => {
+                log::error!("read on forgotten inode");
+                Ok(read.fail(libc::ENOENT)?)
+            }
+            Some(entry) => entry.handle_read(read).await,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -239,6 +255,14 @@ impl Inode {
             Self::Datacenter(dc) => dc.handle_readdir(readdir),
             Self::Dir(dir) => dir.handle_readdir(readdir),
             Self::File(_) => Ok(readdir.fail(libc::ENOTDIR)?),
+        }
+    }
+
+    async fn handle_read(&self, read: requests::Read) -> Result<(), Error> {
+        match self {
+            Self::Datacenter(_) => Ok(read.fail(libc::EISDIR)?),
+            Self::Dir(_) => Ok(read.fail(libc::EISDIR)?),
+            Self::File(file) => file.handle_read(read).await,
         }
     }
 }
@@ -644,5 +668,11 @@ impl File {
 
     fn stat(&self) -> libc::stat {
         file_stat(self.inode, &self.file)
+    }
+
+    async fn handle_read(&self, read: requests::Read) -> Result<(), Error> {
+        let end = read.offset.saturating_add(read.size as u64);
+        let data = self.file.read_at(read.offset..end).await?;
+        Ok(read.reply(&data[..])?)
     }
 }

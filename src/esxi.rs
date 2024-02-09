@@ -129,6 +129,10 @@ impl EsxiClient {
         if status.as_u16() == 404 {
             return Err(NotFound.into());
         }
+        if status.as_u16() == 503 {
+            log::error!("rate limited => {response:?}");
+            bail!("rate limited");
+        }
 
         if !status.is_success() {
             bail!("http error code {status:?}");
