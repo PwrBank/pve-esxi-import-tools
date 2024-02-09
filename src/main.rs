@@ -22,6 +22,7 @@ struct Args {
     datacenter: String,
     datastore: String,
     config_file: String,
+    mount_path: OsString,
 }
 
 impl Args {
@@ -37,7 +38,7 @@ impl Args {
 
         let _ = std::io::stderr().write_all(b"usage: ");
         let _ = std::io::stderr().write_all(arg0.as_bytes());
-        eprintln!(" <baseurl> <user> <password> <datacenter> <datastore> <vm-config-file-path>");
+        eprintln!(" <baseurl> <user> <password> <datacenter> <datastore> <vm-config-file-path> <mount-path>");
 
         std::process::exit(1);
     }
@@ -59,6 +60,9 @@ impl Args {
             datacenter: next()?,
             datastore: next()?,
             config_file: next()?,
+            mount_path: args
+                .next()
+                .ok_or_else(|| format_err!("missing mount path"))?,
         };
 
         if args.next().is_some() {
@@ -71,6 +75,11 @@ impl Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .init();
+
     let mut args = std::env::args_os();
     let arg0 = args.next().unwrap();
 
@@ -81,7 +90,7 @@ async fn main() -> Result<(), Error> {
     connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
     let connector = connector.build();
 
-    let reader = Arc::new(EsxiClient::new(
+    let client = Arc::new(EsxiClient::new(
         &args.url,
         &args.user,
         &args.password,
@@ -89,7 +98,7 @@ async fn main() -> Result<(), Error> {
     ));
 
     let config = vmx::VmConfig::parse(
-        reader
+        client
             .open_file(&args.datacenter, &args.datastore, &args.config_file)
             .await?,
     )
@@ -97,12 +106,13 @@ async fn main() -> Result<(), Error> {
 
     println!("{config:#?}");
 
-    // run_fuse(path).await?;
+    let fs = fs::Fs::new(client, config, args.datacenter, args.datastore);
+    run_fuse(args.mount_path, fs).await?;
 
     Ok(())
 }
 
-async fn run_fuse(path: OsString) -> Result<(), Error> {
+async fn run_fuse(path: OsString, fs: Arc<fs::Fs>) -> Result<(), Error> {
     let mut fuse = Fuse::builder("esxi-folder-fuse")
         .context("failed to create fuse session builder")?
         .enable_open()

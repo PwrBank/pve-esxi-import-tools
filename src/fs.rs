@@ -10,6 +10,7 @@ use proxmox_fuse::{Request, ROOT_ID};
 use crate::esxi::{EsxiClient, EsxiFile};
 use crate::vmx::VmConfig;
 
+#[derive(Debug)]
 struct RemotePath {
     datacenter: String,
     datastore: String,
@@ -22,7 +23,7 @@ struct Entry {
     handle: Mutex<Option<Arc<EsxiFile>>>,
 }
 
-struct Fs {
+pub struct Fs {
     client: Arc<EsxiClient>,
     config: VmConfig,
 
@@ -52,6 +53,10 @@ impl Fs {
         });
 
         for full_path in this.config.disks.values() {
+            // FIXME:
+            //   Try creating subdirectories and multiple datastores in esxi and see how that is
+            //   represented in the .vmx config file.
+            //   for now we just cut off everything except for the final component...
             let file = match full_path.rfind('/') {
                 None => &full_path[..],
                 Some(slash) => &full_path[(slash + 1)..],
@@ -75,6 +80,8 @@ impl Fs {
     }
 
     pub fn add_file(&self, path: String, remote_path: RemotePath) {
+        log::info!("fixating file {path:?} into {remote_path:?}");
+
         let inode = self.create_inode();
         self.files.lock().unwrap().insert(path, inode);
         self.inodes.lock().unwrap().insert(
@@ -100,10 +107,16 @@ impl Fs {
     }
 
     pub async fn handle_lookup(self: Arc<Self>, lookup: requests::Lookup) -> Result<(), Error> {
+        // we currently just have a flat layout of files
+        // FIXME:
+        //   Try creating subdirectories and multiple datastores in esxi and see how that is
+        //   represented in the .vmx config file.
+
         if lookup.parent != ROOT_ID {
             lookup.fail(libc::ENOENT)?;
             return Ok(());
         }
+
         Ok(())
     }
 }
