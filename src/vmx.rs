@@ -27,13 +27,23 @@ pub struct VmConfig {
 }
 
 impl VmConfig {
-    pub async fn parse<R: AsyncRead + Unpin>(data: R) -> Result<Self, Error> {
+    pub async fn parse<R: AsyncRead + Unpin>(data: R, path: &str) -> Result<Self, Error> {
+        // paths are relative to the configuration file, so we need to first create the base bath:
+        let base_path = match path.rsplit_once('/') {
+            None => "",
+            Some((base, _file)) => base,
+        };
+
         let mut this = Self::default();
-        this.parse_do(data).await?;
+        this.parse_do(data, base_path).await?;
         Ok(this)
     }
 
-    async fn parse_do<R: AsyncRead + Unpin>(&mut self, input: R) -> Result<(), Error> {
+    async fn parse_do<R: AsyncRead + Unpin>(
+        &mut self,
+        input: R,
+        base_path: &str,
+    ) -> Result<(), Error> {
         use tokio::io::AsyncBufReadExt as _;
 
         let mut reader = tokio::io::BufReader::new(input);
@@ -46,13 +56,13 @@ impl VmConfig {
                 break;
             }
 
-            self.parse_do_line(linebuf.trim_end())?;
+            self.parse_do_line(linebuf.trim_end(), base_path)?;
         }
 
         Ok(())
     }
 
-    fn parse_do_line(&mut self, line: &str) -> Result<(), Error> {
+    fn parse_do_line(&mut self, line: &str, base_path: &str) -> Result<(), Error> {
         let Some((key, value)) = line.split_once('=') else {
             return Ok(());
         };
@@ -81,8 +91,12 @@ impl VmConfig {
                 );
             }
 
-            self.disks
-                .insert(kind.as_str().to_string(), value.to_string());
+            let value = if value.starts_with('/') || base_path.is_empty() {
+                value.to_string()
+            } else {
+                format!("{base_path}/{value}")
+            };
+            self.disks.insert(kind.as_str().to_string(), value);
         }
         // FIXME: parse other stuff
         // eg.`ethernetX` has addressType="generated" where MAC is in .generatedAddress, so

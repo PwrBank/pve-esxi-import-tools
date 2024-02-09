@@ -14,6 +14,7 @@ mod fs;
 mod vmx;
 
 use esxi::EsxiClient;
+use fs::Inode;
 
 struct Args {
     url: String,
@@ -101,13 +102,55 @@ async fn main() -> Result<(), Error> {
         client
             .open_file(&args.datacenter, &args.datastore, &args.config_file)
             .await?,
+        &args.config_file,
     )
     .await?;
 
     println!("{config:#?}");
 
-    let fs = fs::Fs::new(client, config, args.datacenter, args.datastore).await?;
+    let fs = fs::Fs::new(client);
+    let datacenter = fs.create_datacenter(&args.datacenter);
+    let datastore = datacenter.create_datastore(&args.datastore);
+
+    for disk in config.disks.values() {
+        if disk.starts_with('/') {
+            log::info!("skipping absolute path - volume mapping required for {disk:?}");
+            continue;
+        }
+
+        assert_file_exists(&datastore, disk).await?;
+    }
+
     run_fuse(args.mount_path, fs).await?;
+
+    Ok(())
+}
+
+async fn assert_file_exists(datastore: &Arc<fs::Dir>, path: &str) -> Result<(), Error> {
+    log::info!("checking for path {path:?}");
+
+    let mut at = Arc::clone(datastore);
+    let mut iter = path.split('/').peekable();
+    while let Some(component) = iter.next() {
+        if iter.peek().is_none() {
+            // this is a file!
+            match at.lookup(component).await? {
+                None => bail!("file not found on remote: {path:?}"),
+                Some(Inode::File(_)) => {
+                    log::info!("found file {path:?}");
+                    break;
+                }
+                Some(_) => bail!("file expected, but found a directory at: {path:?}"),
+            }
+        }
+        // this is a directory
+        match at.lookup(component).await? {
+            Some(Inode::Dir(dir)) => {
+                at = dir;
+            }
+            _ => bail!("file not found on remote: {path:?}"),
+        }
+    }
 
     Ok(())
 }

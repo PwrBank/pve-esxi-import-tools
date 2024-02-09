@@ -4,14 +4,13 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use anyhow::Error;
+use anyhow::{bail, Error};
 use tokio::sync::watch;
 
 use proxmox_fuse::requests::{self, FuseRequest};
 use proxmox_fuse::{Request, ROOT_ID};
 
 use crate::esxi::{EsxiClient, EsxiFile, IsDirectory, NotFound};
-use crate::vmx::VmConfig;
 
 const TIMEOUT: f64 = 600.0;
 
@@ -25,197 +24,6 @@ impl fmt::Display for Errno {
 }
 
 impl StdError for Errno {}
-
-#[derive(Debug)]
-struct RemotePath {
-    datacenter: String,
-    datastore: String,
-    path: String,
-}
-
-struct OldFile {
-    inode: u64,
-    remote_path: RemotePath,
-    file: EsxiFile,
-    stat: libc::stat,
-}
-
-pub struct Fs {
-    client: Arc<EsxiClient>,
-    config: VmConfig,
-
-    /// map inodes to open file handles
-    inodes: Mutex<BTreeMap<u64, Arc<OldFile>>>,
-
-    /// map file names to inodes
-    files: Mutex<HashMap<String, u64>>,
-
-    /// used to generate inodes
-    current_inode: AtomicU64,
-
-    /// default datacenter to use
-    datacenter: String,
-
-    /// default datastore to use
-    datastore: String,
-}
-
-impl Fs {
-    pub async fn new(
-        client: Arc<EsxiClient>,
-        config: VmConfig,
-        datacenter: String,
-        datastore: String,
-    ) -> Result<Arc<Self>, Error> {
-        let this = Arc::new(Self {
-            client,
-            config,
-            inodes: Mutex::new(BTreeMap::new()),
-            files: Mutex::new(HashMap::new()),
-            current_inode: AtomicU64::new(ROOT_ID + 1),
-            datacenter,
-            datastore,
-        });
-
-        for full_path in this.config.disks.values() {
-            // FIXME:
-            //   Try creating subdirectories and multiple datastores in esxi and see how that is
-            //   represented in the .vmx config file.
-            //   for now we just cut off everything except for the final component...
-            let file = match full_path.rfind('/') {
-                None => &full_path[..],
-                Some(slash) => &full_path[(slash + 1)..],
-            };
-
-            this.add_file(
-                file.to_string(),
-                RemotePath {
-                    datacenter: this.datacenter.clone(),
-                    datastore: this.datastore.clone(),
-                    path: full_path.clone(),
-                },
-            );
-        }
-
-        Ok(this)
-    }
-
-    fn create_inode(&self) -> u64 {
-        self.current_inode.fetch_add(1, Ordering::AcqRel)
-    }
-
-    pub async fn add_file(&self, path: String, remote_path: RemotePath) -> Result<u64, Error> {
-        log::info!("fixating file {path:?} into {remote_path:?}");
-
-        let file = self
-            .client
-            .open_file(
-                &remote_path.datacenter,
-                &remote_path.datastore,
-                &remote_path.path,
-            )
-            .await?;
-
-        let inode = self.create_inode();
-        self.files.lock().unwrap().insert(path, inode);
-        self.inodes.lock().unwrap().insert(
-            inode,
-            Arc::new(OldFile {
-                inode,
-                remote_path,
-                stat: file_stat(inode, &file),
-                file,
-            }),
-        );
-
-        Ok(inode)
-    }
-
-    pub async fn handle_request(self: Arc<Self>, request: Request) {
-        log::info!("FUSE REQUEST: {request:?}");
-
-        let res = match request {
-            Request::Getattr(r) => self.handle_getattr(r).await,
-            Request::Forget(r) => self.handle_forget(r),
-            Request::Lookup(r) => self.handle_lookup(r).await,
-            _ => todo!("unhandled request: {request:?}"),
-        };
-
-        match res {
-            Ok(()) => (),
-            Err(err) => eprintln!("error handling request: {err:?}"),
-        }
-    }
-
-    pub async fn handle_getattr(self: Arc<Self>, getattr: requests::Getattr) -> Result<(), Error> {
-        if getattr.inode == ROOT_ID {
-            let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-
-            stat.st_ino = ROOT_ID;
-            stat.st_nlink = 2;
-            stat.st_mode = 0o555 | libc::S_IFDIR;
-            return Ok(getattr.reply(&stat, TIMEOUT)?);
-        }
-
-        let entry = self.inodes.lock().unwrap().get(&getattr.inode).cloned();
-        let Some(entry) = entry else {
-            return Ok(getattr.fail(libc::ENOENT)?);
-        };
-
-        Ok(getattr.reply(&entry.stat, TIMEOUT)?)
-    }
-
-    pub fn handle_forget(self: Arc<Self>, forget: requests::Forget) -> Result<(), Error> {
-        forget.reply();
-        Ok(())
-    }
-
-    pub async fn handle_lookup(self: Arc<Self>, lookup: requests::Lookup) -> Result<(), Error> {
-        // we currently just have a flat layout of files
-        // FIXME:
-        //   Try creating subdirectories and multiple datastores in esxi and see how that is
-        //   represented in the .vmx config file.
-
-        if lookup.parent != ROOT_ID {
-            log::debug!("denying lookup relative to invalid inode");
-            return Ok(lookup.fail(libc::ENOENT)?);
-        }
-
-        let Some(file_name) = lookup.file_name.to_str() else {
-            log::info!("denying non-utf8 file name query");
-            return Ok(lookup.fail(libc::ENOENT)?);
-        };
-
-        let inode = self.files.lock().unwrap().get(file_name).copied();
-        let inode = match inode {
-            None => {
-                // TODO! See if we need to deal with directories, then this becomes much more
-                // annoying!
-                return Ok(lookup.fail(libc::ENOENT)?);
-            }
-            Some(inode) => inode,
-        };
-
-        let entry = self.inodes.lock().unwrap().get(&inode).cloned();
-        let Some(entry) = entry else {
-            return Ok(lookup.fail(libc::ENOENT)?);
-        };
-
-        lookup.reply(&proxmox_fuse::EntryParam {
-            inode,
-            generation: 1,
-            attr: entry.stat,
-            attr_timeout: TIMEOUT,
-            entry_timeout: TIMEOUT,
-        })?;
-
-        Ok(())
-    }
-
-    pub async fn handle_readdir(self: Arc<Self>, lookup: requests::Readdir) -> Result<(), Error> {
-        todo!();
-    }
-}
 
 fn file_stat(inode: u64, file: &EsxiFile) -> libc::stat {
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
@@ -258,18 +66,18 @@ impl FsBase {
     }
 }
 
-pub struct NewFs {
+pub struct Fs {
     fs: Arc<FsBase>,
     root: Root,
 }
 
-impl NewFs {
-    pub fn new(client: Arc<EsxiClient>) -> Self {
+impl Fs {
+    pub fn new(client: Arc<EsxiClient>) -> Arc<Self> {
         let fs = FsBase::new(client);
-        Self {
+        Arc::new(Self {
             root: Root::new(Arc::clone(&fs)),
             fs,
-        }
+        })
     }
 
     pub fn create_datacenter(&self, name: &str) -> Arc<Datacenter> {
@@ -283,6 +91,7 @@ impl NewFs {
             Request::Getattr(r) => self.handle_getattr(r).await,
             Request::Forget(r) => self.handle_forget(r),
             Request::Lookup(r) => self.handle_lookup(r).await,
+            Request::Readdir(r) => self.handle_readdir(r).await,
             _ => todo!("unhandled request: {request:?}"),
         };
 
@@ -338,27 +147,37 @@ impl NewFs {
 
     async fn handle_getattr(self: Arc<Self>, getattr: requests::Getattr) -> Result<(), Error> {
         if getattr.inode == ROOT_ID {
-            let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-
-            stat.st_ino = ROOT_ID;
-            stat.st_nlink = 2;
-            stat.st_mode = 0o555 | libc::S_IFDIR;
-            return Ok(getattr.reply(&stat, TIMEOUT)?);
+            return Ok(getattr.reply(&self.root.stat(), TIMEOUT)?);
         }
 
         let entry = self.fs.inodes.lock().unwrap().get(&getattr.inode).cloned();
         match entry {
             None => {
                 log::error!("lookup produced forgotten inode");
-                Ok(getattr.fail(libc::EIO)?)
+                Ok(getattr.fail(libc::ENOENT)?)
             }
             Some(entry) => Ok(getattr.reply(&entry.stat(), TIMEOUT)?),
+        }
+    }
+
+    async fn handle_readdir(self: Arc<Self>, readdir: requests::Readdir) -> Result<(), Error> {
+        if readdir.inode == ROOT_ID {
+            return self.root.handle_readdir(readdir);
+        }
+
+        let entry = self.fs.inodes.lock().unwrap().get(&readdir.inode).cloned();
+        match entry {
+            None => {
+                log::error!("readdir on forgotten inode");
+                Ok(readdir.fail(libc::ENOENT)?)
+            }
+            Some(entry) => entry.handle_readdir(readdir),
         }
     }
 }
 
 #[derive(Clone)]
-enum Inode {
+pub(crate) enum Inode {
     Datacenter(Arc<Datacenter>),
     Dir(Arc<Dir>),
     File(Arc<File>),
@@ -371,14 +190,6 @@ impl Inode {
             Self::Dir(entry) => entry.inode,
             Self::File(entry) => entry.inode,
         }
-    }
-
-    async fn handle_lookup(&self, name: &str) -> Result<Option<u64>, Error> {
-        Ok(match self {
-            Self::Datacenter(dc) => dc.handle_lookup(name),
-            Self::Dir(dir) => dir.handle_lookup(name).await?,
-            Self::File(_) => return Err(Errno(libc::ENOTDIR).into()),
-        })
     }
 
     fn entry_param(&self) -> proxmox_fuse::EntryParam {
@@ -412,6 +223,22 @@ impl Inode {
             Self::Datacenter(dir) => dir.stat(),
             Self::Dir(dir) => dir.stat(),
             Self::File(file) => file.stat(),
+        }
+    }
+
+    async fn handle_lookup(&self, name: &str) -> Result<Option<u64>, Error> {
+        Ok(match self {
+            Self::Datacenter(dc) => dc.handle_lookup(name),
+            Self::Dir(dir) => dir.handle_lookup(name).await?,
+            Self::File(_) => return Err(Errno(libc::ENOTDIR).into()),
+        })
+    }
+
+    fn handle_readdir(&self, readdir: requests::Readdir) -> Result<(), Error> {
+        match self {
+            Self::Datacenter(dc) => dc.handle_readdir(readdir),
+            Self::Dir(dir) => dir.handle_readdir(readdir),
+            Self::File(_) => Ok(readdir.fail(libc::ENOTDIR)?),
         }
     }
 }
@@ -472,9 +299,32 @@ impl Root {
     fn forget(&self, forget: requests::Forget) {
         forget.reply();
     }
+
+    fn stat(&self) -> libc::stat {
+        dir_stat(ROOT_ID)
+    }
+
+    fn handle_readdir(&self, mut readdir: requests::Readdir) -> Result<(), Error> {
+        let datacenters = self.datacenters.lock().unwrap();
+
+        for (count, (name, inode)) in datacenters.iter().skip(readdir.offset as usize).enumerate() {
+            if readdir
+                .add_entry(
+                    name.as_ref(),
+                    &dir_stat(*inode),
+                    readdir.offset as isize + count as isize,
+                )?
+                .is_full()
+            {
+                break;
+            }
+        }
+
+        Ok(readdir.reply()?)
+    }
 }
 
-struct Datacenter {
+pub(crate) struct Datacenter {
     fs: Arc<FsBase>,
     inode: u64,
     datacenter: String,
@@ -493,7 +343,7 @@ impl Datacenter {
         }
     }
 
-    fn create_datastore(&self, name: &str) -> Arc<Dir> {
+    pub fn create_datastore(&self, name: &str) -> Arc<Dir> {
         let mut datastores = self.datastores.lock().unwrap();
         if let Some(inode) = datastores.get(name).copied() {
             match self.fs.inodes.lock().unwrap().get(&inode).unwrap() {
@@ -543,9 +393,28 @@ impl Datacenter {
     fn forget(&self, forget: requests::Forget) {
         forget.reply();
     }
+
+    fn handle_readdir(&self, mut readdir: requests::Readdir) -> Result<(), Error> {
+        let datastores = self.datastores.lock().unwrap();
+
+        for (count, (name, inode)) in datastores.iter().skip(readdir.offset as usize).enumerate() {
+            if readdir
+                .add_entry(
+                    name.as_ref(),
+                    &dir_stat(*inode),
+                    readdir.offset as isize + count as isize,
+                )?
+                .is_full()
+            {
+                break;
+            }
+        }
+
+        Ok(readdir.reply()?)
+    }
 }
 
-struct Dir {
+pub(crate) struct Dir {
     fs: Arc<FsBase>,
     parent: u64,
     inode: u64,
@@ -577,6 +446,44 @@ impl Dir {
         }
     }
 
+    pub fn create_directory(&self, name: &str) -> Result<Arc<Dir>, Error> {
+        let mut entries = self.entries.lock().unwrap();
+        if let Some(inode) = entries.get(name).copied() {
+            match self.fs.inodes.lock().unwrap().get(&inode).unwrap() {
+                Inode::Dir(dir) => return Ok(Arc::clone(&dir)),
+                _ => bail!("create_directory() called on an existing non-directory path"),
+            }
+        }
+
+        let inode = self.fs.create_inode();
+
+        let dir = Arc::new(Dir::new(
+            Arc::clone(&self.fs),
+            self.inode,
+            inode,
+            self.datacenter.clone(),
+            self.datastore.clone(),
+            format!("{}/{name}", self.path),
+        ));
+
+        self.fs
+            .inodes
+            .lock()
+            .unwrap()
+            .insert(inode, Inode::Dir(Arc::clone(&dir)));
+
+        entries.insert(name.to_string(), inode);
+
+        Ok(dir)
+    }
+
+    pub async fn lookup(&self, name: &str) -> Result<Option<Inode>, Error> {
+        Ok(match self.handle_lookup(name).await? {
+            Some(inode) => self.fs.inodes.lock().unwrap().get(&inode).cloned(),
+            None => None,
+        })
+    }
+
     async fn handle_lookup(&self, name: &str) -> Result<Option<u64>, Error> {
         let inode = self.entries.lock().unwrap().get(name).copied();
         Ok(match inode {
@@ -589,23 +496,31 @@ impl Dir {
     }
 
     async fn lookup_new(&self, name: &str) -> Result<Option<u64>, Error> {
-        let send = {
-            let mut active_lookups = self.active_lookups.lock().unwrap();
-            if let Some(mut active) = active_lookups.get(name).cloned() {
-                drop(active_lookups);
-                active.changed().await?;
-                return Ok(*active.borrow());
-            }
+        // static analysis does not understand `drop(mutex_guard)`, so this code is ugly
+        // instead...
 
-            let (send, recv) = watch::channel(None);
-            active_lookups.insert(name.to_string(), recv);
-            send
+        let send = 'send: {
+            let mut active = {
+                let mut active_lookups = self.active_lookups.lock().unwrap();
+                match active_lookups.get(name).cloned() {
+                    Some(active) => active,
+                    None => {
+                        let (send, recv) = watch::channel(None);
+                        active_lookups.insert(name.to_string(), recv);
+                        break 'send send;
+                    }
+                }
+            };
+
+            active.changed().await?;
+            return Ok(*active.borrow());
         };
 
+        let full_path = format!("{}/{name}", self.path);
         let (inode, entry) = match self
             .fs
             .client
-            .open_file(&self.datacenter, &self.datastore, name)
+            .open_file(&self.datacenter, &self.datastore, &full_path)
             .await
         {
             Ok(file) => {
@@ -615,7 +530,7 @@ impl Dir {
                     inode,
                     self.datacenter.clone(),
                     self.datastore.clone(),
-                    format!("{}/{name}", self.path),
+                    full_path,
                     file,
                 ));
                 (inode, Inode::File(file))
@@ -628,7 +543,7 @@ impl Dir {
                     inode,
                     self.datacenter.clone(),
                     self.datastore.clone(),
-                    format!("{}/{name}", self.path),
+                    full_path,
                 ));
                 (inode, Inode::Dir(dir))
             }
@@ -636,7 +551,10 @@ impl Dir {
                 send.send(None)?;
                 return Ok(None);
             }
-            Err(err) => return Err(err),
+            Err(err) => {
+                log::info!("error? {err:?}");
+                return Err(err);
+            }
         };
 
         self.fs.inodes.lock().unwrap().insert(inode, entry);
@@ -651,9 +569,37 @@ impl Dir {
     fn stat(&self) -> libc::stat {
         dir_stat(self.inode)
     }
+
+    fn handle_readdir(&self, mut readdir: requests::Readdir) -> Result<(), Error> {
+        let skip = readdir.offset;
+        let mut at = 0i64;
+
+        let entries = self.entries.lock().unwrap();
+        let inodes = self.fs.inodes.lock().unwrap();
+        for (name, inode) in entries.iter() {
+            let entry = match inodes.get(inode) {
+                None => continue,
+                Some(entry) => entry,
+            };
+
+            at += 1;
+            if at <= skip {
+                continue;
+            }
+
+            if readdir
+                .add_entry(name.as_ref(), &entry.stat(), at as isize)?
+                .is_full()
+            {
+                break;
+            }
+        }
+
+        Ok(readdir.reply()?)
+    }
 }
 
-struct File {
+pub(crate) struct File {
     fs: Arc<FsBase>,
     inode: u64,
     datacenter: String,

@@ -214,6 +214,7 @@ impl EsxiClient {
         datastore: &str,
         path: &str,
     ) -> Result<EsxiFile, Error> {
+        log::info!("open file [{datacenter}, {datastore}] {path:?}");
         let query = self.file_url(datacenter, datastore, path);
         let size = self.get_file_size(datacenter, datastore, path).await?;
         Ok(EsxiFile {
