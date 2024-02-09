@@ -81,7 +81,27 @@ async fn main() -> Result<(), Error> {
     connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
     let connector = connector.build();
 
-    let reader = EsxiClient::new(&args.url, &args.user, &args.password, connector);
+    let reader = Arc::new(EsxiClient::new(
+        &args.url,
+        &args.user,
+        &args.password,
+        connector,
+    ));
+
+    let mut file = tokio::io::BufReader::new(
+        reader
+            .open_file(&args.datacenter, &args.datastore, &args.config_file)
+            .await?,
+    );
+    loop {
+        use tokio::io::AsyncBufReadExt;
+        let mut s = String::new();
+        file.read_line(&mut s).await?;
+        if s.is_empty() {
+            break;
+        }
+        print!("=> {s}");
+    }
 
     let config = reader
         .download_file(&args.datacenter, &args.datastore, &args.config_file)

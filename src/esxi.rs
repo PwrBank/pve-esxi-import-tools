@@ -1,11 +1,19 @@
 use std::fmt;
+use std::future::Future;
+use std::io;
 use std::ops::Range;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use anyhow::{bail, format_err, Context as _, Error};
-use http::Request;
+use http::{Request, Response};
+use hyper::body::Bytes;
 use hyper::Body;
 use openssl::ssl::SslConnector;
 use percent_encoding::{percent_encode, AsciiSet};
+use tokio::io::AsyncRead;
+use tokio::task::JoinHandle;
 
 use proxmox_http::client::Client;
 
@@ -39,7 +47,7 @@ impl EsxiClient {
         datacenter: &str,
         datastore: &str,
         path: &str,
-    ) -> Result<hyper::body::Bytes, Error> {
+    ) -> Result<Bytes, Error> {
         self.download(datacenter, datastore, path, None).await
     }
 
@@ -50,9 +58,40 @@ impl EsxiClient {
         datastore: &str,
         path: &str,
         range: Range<u64>,
-    ) -> Result<hyper::body::Bytes, Error> {
+    ) -> Result<Bytes, Error> {
         self.download(datacenter, datastore, path, Some(range))
             .await
+    }
+
+    fn file_url(&self, datacenter: &str, datastore: &str, path: &str) -> String {
+        let datacenter = percent_encode(datacenter.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
+        let datastore = percent_encode(datastore.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
+        let path = percent_encode(path.as_bytes(), &QUERY_ESC);
+
+        format!(
+            "{}/{path}?dcName={datacenter}&dsName={datastore}",
+            self.folder_url
+        )
+    }
+
+    async fn make_request(&self, req: http::request::Builder) -> Result<Response<Body>, Error> {
+        let req = req
+            .header("authorization", &self.auth_header)
+            .body(Body::empty())
+            .context("failed to build http request")?;
+
+        let response = self
+            .client
+            .request(req)
+            .await
+            .context("http request failed")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            bail!("http error code {status:?}");
+        }
+
+        Ok(response)
     }
 
     /// Download a range from a file.
@@ -62,16 +101,13 @@ impl EsxiClient {
         datastore: &str,
         path: &str,
         range: Option<Range<u64>>,
-    ) -> Result<hyper::body::Bytes, Error> {
-        let datacenter = percent_encode(datacenter.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
-        let datastore = percent_encode(datastore.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
-        let path = percent_encode(path.as_bytes(), &QUERY_ESC);
+    ) -> Result<Bytes, Error> {
+        self.download_do(&self.file_url(datacenter, datastore, path), range)
+            .await
+    }
 
-        let mut req = Request::get(format!(
-            "{}/{path}?dcName={datacenter}&dsName={datastore}",
-            self.folder_url
-        ))
-        .header("authorization", &self.auth_header);
+    async fn download_do(&self, query: &str, range: Option<Range<u64>>) -> Result<Bytes, Error> {
+        let mut req = Request::get(query);
 
         if let Some(range) = range {
             req = req.header(
@@ -80,20 +116,7 @@ impl EsxiClient {
             )
         }
 
-        let req = req
-            .body(Body::empty())
-            .context("failed to build http request")?;
-
-        let (parts, body) = self
-            .client
-            .request(req)
-            .await
-            .context("http request failed")?
-            .into_parts();
-
-        if !parts.status.is_success() {
-            bail!("http error code {:?}", parts.status);
-        }
+        let (parts, body) = self.make_request(req).await?.into_parts();
 
         let content_type = parts.headers.get("content-type").ok_or_else(|| {
             format_err!(
@@ -107,5 +130,130 @@ impl EsxiClient {
         let body = hyper::body::to_bytes(body).await?;
 
         Ok(body)
+    }
+
+    /// Get the size of a file.
+    pub async fn get_file_size(
+        &self,
+        datacenter: &str,
+        datastore: &str,
+        path: &str,
+    ) -> Result<u64, Error> {
+        let response = self
+            .make_request(Request::head(self.file_url(datacenter, datastore, path)))
+            .await?;
+
+        response
+            .headers()
+            .get("content-length")
+            .ok_or_else(|| format_err!("http response did not include a content-length"))?
+            .to_str()
+            .context("content-length header is not a number")?
+            .parse::<u64>()
+            .context("failed to parse content size")
+    }
+
+    /// Get a `Read`able file.
+    pub async fn open_file(
+        self: &Arc<Self>,
+        datacenter: &str,
+        datastore: &str,
+        path: &str,
+    ) -> Result<EsxiFile, Error> {
+        let query = self.file_url(datacenter, datastore, path);
+        let size = self.get_file_size(datacenter, datastore, path).await?;
+        Ok(EsxiFile {
+            client: Arc::clone(self),
+            query: query.into(),
+            size,
+            at: 0,
+            state: ReadState::New,
+        })
+    }
+}
+
+enum ReadState {
+    New,
+    Have { data: Bytes, at: usize },
+    Reading(JoinHandle<Result<Bytes, Error>>),
+    Eof,
+}
+
+pub struct EsxiFile {
+    client: Arc<EsxiClient>,
+    query: Arc<str>,
+    size: u64,
+    at: u64,
+    state: ReadState,
+}
+
+impl EsxiFile {
+    pub async fn read_at(&self, range: Range<u64>) -> Result<Bytes, Error> {
+        self.client.download_do(&self.query, Some(range)).await
+    }
+}
+
+impl AsyncRead for EsxiFile {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+
+        loop {
+            match &mut this.state {
+                ReadState::Eof => return Poll::Ready(Ok(())),
+                ReadState::New => (), // fall through to the read code
+                ReadState::Have { data, at } => {
+                    let data = &**data;
+                    let data = &data[*at..];
+                    if !data.is_empty() {
+                        let put = data.len().min(buf.remaining());
+                        buf.put_slice(&data[..put]);
+                        *at += put;
+                        return Poll::Ready(Ok(()));
+                    }
+                    // otherwise fall through to the read code
+                }
+                ReadState::Reading(fut) => {
+                    let data = match Pin::new(fut).poll(cx) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(result) => match result {
+                            Ok(Ok(bytes)) => bytes,
+                            Ok(Err(err)) => {
+                                return Poll::Ready(Err(io::Error::new(
+                                    io::ErrorKind::Other,
+                                    err.to_string(),
+                                )));
+                            }
+                            Err(err) => {
+                                return Poll::Ready(Err(io::Error::new(
+                                    io::ErrorKind::Other,
+                                    err.to_string(),
+                                )));
+                            }
+                        },
+                    };
+
+                    this.at = this.at.saturating_add(data.len() as u64).min(this.size);
+                    this.state = ReadState::Have { data, at: 0 };
+                    continue;
+                }
+            }
+
+            if this.at == this.size {
+                this.state = ReadState::Eof;
+                return Poll::Ready(Ok(()));
+            }
+
+            let client = Arc::clone(&this.client);
+            let query = Arc::clone(&this.query);
+            let remaining = buf.remaining() as u64;
+            let range = this.at..(this.at + remaining);
+            this.state = ReadState::Reading(tokio::spawn(async move {
+                client.download_do(&query, Some(range)).await
+            }));
+        }
     }
 }
