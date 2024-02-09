@@ -106,7 +106,7 @@ async fn main() -> Result<(), Error> {
 
     println!("{config:#?}");
 
-    let fs = fs::Fs::new(client, config, args.datacenter, args.datastore);
+    let fs = fs::Fs::new(client, config, args.datacenter, args.datastore).await?;
     run_fuse(args.mount_path, fs).await?;
 
     Ok(())
@@ -125,14 +125,9 @@ async fn run_fuse(path: OsString, fs: Arc<fs::Fs>) -> Result<(), Error> {
 
     while let Some(request) = fuse.next().await {
         let request = request.context("error fetching next fuse request")?;
-        tokio::spawn(handle_request(request));
+        let fs = Arc::clone(&fs);
+        tokio::spawn(async move { fs.handle_request(request).await });
     }
 
     Ok(())
-}
-
-async fn handle_request(request: proxmox_fuse::Request) {
-    use proxmox_fuse::Request;
-
-    todo!();
 }

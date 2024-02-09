@@ -1,3 +1,4 @@
+use std::error::Error as StdError;
 use std::fmt;
 use std::future::Future;
 use std::io;
@@ -16,6 +17,28 @@ use tokio::io::AsyncRead;
 use tokio::task::JoinHandle;
 
 use proxmox_http::client::Client;
+
+#[derive(Clone, Copy, Debug)]
+pub struct NotFound;
+
+impl fmt::Display for NotFound {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("file not found")
+    }
+}
+
+impl StdError for NotFound {}
+
+#[derive(Clone, Copy, Debug)]
+pub struct IsDirectory;
+
+impl fmt::Display for IsDirectory {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("not a file, may be a directory")
+    }
+}
+
+impl StdError for IsDirectory {}
 
 const QUERY_ESC: AsciiSet = percent_encoding::CONTROLS.add(b'?');
 
@@ -63,6 +86,22 @@ impl EsxiClient {
             .await
     }
 
+    fn datacenter_url(&self, datacenter: &str) -> String {
+        let datacenter = percent_encode(datacenter.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
+
+        format!("{}/?dcName={datacenter}", self.folder_url)
+    }
+
+    fn datastore_url(&self, datacenter: &str, datastore: &str) -> String {
+        let datacenter = percent_encode(datacenter.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
+        let datastore = percent_encode(datastore.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
+
+        format!(
+            "{}/?dcName={datacenter}&dsName={datastore}",
+            self.folder_url
+        )
+    }
+
     fn file_url(&self, datacenter: &str, datastore: &str, path: &str) -> String {
         let datacenter = percent_encode(datacenter.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
         let datastore = percent_encode(datastore.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
@@ -87,6 +126,10 @@ impl EsxiClient {
             .context("http request failed")?;
 
         let status = response.status();
+        if status.as_u16() == 404 {
+            return Err(NotFound.into());
+        }
+
         if !status.is_success() {
             bail!("http error code {status:?}");
         }
@@ -143,8 +186,19 @@ impl EsxiClient {
             .make_request(Request::head(self.file_url(datacenter, datastore, path)))
             .await?;
 
-        response
-            .headers()
+        let headers = response.headers();
+
+        let content_type = headers
+            .get("content-type")
+            .ok_or_else(|| format_err!("http response did not include a content-type"))?
+            .to_str()
+            .context("content-type header is not a proper string")?;
+
+        if content_type != "application/octet-stream" {
+            return Err(IsDirectory.into());
+        }
+
+        headers
             .get("content-length")
             .ok_or_else(|| format_err!("http response did not include a content-length"))?
             .to_str()
@@ -170,6 +224,32 @@ impl EsxiClient {
             state: ReadState::New,
         })
     }
+
+    /*
+    /// Check if a datacenter exists.
+    pub async fn datacenter_exists(&self, datacenter: &str) -> Result<bool, Error> {
+        match self
+            .make_request(Request::head(self.datacenter_url(datacenter)))
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(err) if err.downcast_ref::<NotFound>().is_some() => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Check if a datastore exists.
+    pub async fn datastore_exists(&self, datacenter: &str, datastore: &str) -> Result<bool, Error> {
+        match self
+            .make_request(Request::head(self.datastore_url(datacenter, datastore)))
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(err) if err.downcast_ref::<NotFound>().is_some() => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+    */
 }
 
 enum ReadState {
@@ -188,6 +268,10 @@ pub struct EsxiFile {
 }
 
 impl EsxiFile {
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
     pub async fn read_at(&self, range: Range<u64>) -> Result<Bytes, Error> {
         self.client.download_do(&self.query, Some(range)).await
     }
