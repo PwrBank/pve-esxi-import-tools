@@ -100,14 +100,14 @@ impl Cache {
         let mut entries = self.entries.lock().unwrap();
         let mut active_lookups = self.active_lookups.lock().unwrap();
         if let Some(entry) = &result {
-            entries.insert(block_offset, Arc::clone(entry));
-            while entries.len() > self.block_count {
+            while entries.len() + 1 > self.block_count {
                 // FIXME: We could use an LRU logic here, but we do expect this to be mostly
                 // sequential reads...
                 if let Some((offset, _)) = entries.pop_first() {
                     log::debug!("dropped cache entry for block at offset {offset}");
                 }
             }
+            entries.insert(block_offset, Arc::clone(entry));
         }
         send.send(result.clone())?;
         active_lookups.remove(&block_offset);
