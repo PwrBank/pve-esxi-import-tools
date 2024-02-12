@@ -726,7 +726,10 @@ impl File {
             path,
             stat: file_stat(inode, &file),
             file,
-            cache: Cache::new(8 << 20, 64 << 20),
+            cache: Cache::new(
+                crate::file_cache_page_size(),
+                crate::file_cache_page_count(),
+            ),
         }
     }
 

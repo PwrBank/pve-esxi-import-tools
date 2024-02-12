@@ -135,7 +135,7 @@ impl EsxiClient {
             let status = response.status();
             if status.as_u16() == 503 {
                 if retry < 5 {
-                    log::error!("rate limited, retrying...");
+                    log::error!("rate limited, retrying ({retry} of 5)...");
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                     continue;
                 }

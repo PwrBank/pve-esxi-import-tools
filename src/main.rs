@@ -17,6 +17,17 @@ mod vmx;
 use esxi::EsxiClient;
 use fs::Inode;
 
+static mut FILE_CACHE_PAGE_SIZE: u64 = 8 << 20;
+static mut FILE_CACHE_PAGE_COUNT: usize = 8;
+
+pub fn file_cache_page_size() -> u64 {
+    unsafe { FILE_CACHE_PAGE_SIZE }
+}
+
+pub fn file_cache_page_count() -> usize {
+    unsafe { FILE_CACHE_PAGE_COUNT }
+}
+
 struct Args {
     url: String,
     user: String,
@@ -77,16 +88,39 @@ impl Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    env_logger::builder()
+    let arg0 = std::env::args_os().next().unwrap();
+
+    let mut log_filter_level = None;
+
+    let mut args = pico_args::Arguments::from_env();
+
+    if let Some(value) = args.opt_value_from_str("--cache-page-size")? {
+        unsafe {
+            FILE_CACHE_PAGE_SIZE = value;
+        }
+    }
+    if let Some(value) = args.opt_value_from_str("--cache-page-count")? {
+        unsafe {
+            FILE_CACHE_PAGE_COUNT = value;
+        }
+    }
+    while args.contains("--debug") {
+        log_filter_level = Some(log::LevelFilter::Debug);
+    }
+    if let Some(value) = args.opt_value_from_str("--log-level")? {
+        log_filter_level = Some(value);
+    }
+
+    let mut env_logger = env_logger::builder();
+    env_logger
         .filter_level(log::LevelFilter::Info)
-        .parse_env("PROXMOX_ESXI_FUSE_LOG")
-        .init();
+        .parse_env("PROXMOX_ESXI_FUSE_LOG");
+    if let Some(level) = log_filter_level {
+        env_logger.filter_level(level);
+    }
+    { env_logger }.init();
 
-    let mut args = std::env::args_os();
-    let arg0 = args.next().unwrap();
-
-    let args = args.collect::<Vec<_>>();
-    let args = Args::from_vec(&arg0, args);
+    let args = Args::from_vec(&arg0, args.finish());
 
     let mut connector = SslConnector::builder(SslMethod::tls()).unwrap();
     connector.set_verify(openssl::ssl::SslVerifyMode::NONE);

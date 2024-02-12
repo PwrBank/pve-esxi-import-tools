@@ -18,22 +18,15 @@ pub struct Cache {
 }
 
 impl Cache {
-    pub fn new(block_size: u64, total_bytes: u64) -> Self {
+    pub fn new(block_size: u64, block_count: usize) -> Self {
         assert!(block_size != 0, "Cache::new with empty block size");
+        assert!(block_count != 0, "Cache::new with empty block count");
         assert!(
             block_size.is_power_of_two(),
             "Cache::new with non power of 2 block size"
         );
 
         let block_mask = !(block_size - 1);
-
-        let total_bytes = (total_bytes + !block_mask) / block_size * block_size;
-        assert!(total_bytes != 0, "Cache::new with empty total size");
-        let block_count = (total_bytes / block_size) as usize;
-        assert!(
-            block_count != 0,
-            "Cache::new total size causing a block count of zero"
-        );
 
         Self {
             block_size,
