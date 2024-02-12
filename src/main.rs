@@ -9,6 +9,7 @@ use openssl::ssl::{SslConnector, SslMethod};
 
 use proxmox_fuse::Fuse;
 
+mod cache;
 mod esxi;
 mod fs;
 mod vmx;

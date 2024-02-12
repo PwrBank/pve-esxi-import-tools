@@ -10,6 +10,7 @@ use tokio::sync::watch;
 use proxmox_fuse::requests::{self, FuseRequest};
 use proxmox_fuse::{Request, ROOT_ID};
 
+use crate::cache::Cache;
 use crate::esxi::{EsxiClient, EsxiFile, IsDirectory, NotFound};
 
 const TIMEOUT: f64 = 600.0;
@@ -356,7 +357,6 @@ pub(crate) struct Datacenter {
     inode: u64,
     datacenter: String,
     datastores: Mutex<BTreeMap<String, u64>>,
-    active_lookups: Mutex<BTreeMap<String, watch::Receiver<Option<u64>>>>,
 }
 
 impl Datacenter {
@@ -366,7 +366,6 @@ impl Datacenter {
             inode,
             datacenter,
             datastores: Mutex::new(BTreeMap::new()),
-            active_lookups: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -542,7 +541,9 @@ impl Dir {
                 }
             };
 
-            active.changed().await?;
+            // This will almost always get a RecvError because the sender is immediately dropped,
+            // but that's fine.
+            let _ = active.changed().await;
             return Ok(*active.borrow());
         };
 
@@ -589,9 +590,13 @@ impl Dir {
 
         self.fs.inodes.lock().unwrap().insert(inode, entry);
 
-        self.entries.lock().unwrap().insert(name.to_string(), inode);
-
+        // we need to hold the entries lock over the active_lookups lock to make sure a negative
+        // entry lookup is not followed by a negative active-lookup lookup by another task.
+        let mut entries = self.entries.lock().unwrap();
+        let mut active_lookups = self.active_lookups.lock().unwrap();
+        entries.insert(name.to_string(), inode);
         send.send(Some(inode))?;
+        active_lookups.remove(name);
 
         Ok(Some(inode))
     }
@@ -644,6 +649,7 @@ pub(crate) struct File {
     path: String,
     file: EsxiFile,
     stat: libc::stat,
+    cache: Cache,
 }
 
 impl File {
@@ -663,6 +669,7 @@ impl File {
             path,
             stat: file_stat(inode, &file),
             file,
+            cache: Cache::new(8 << 20, 64 << 20),
         }
     }
 
@@ -671,8 +678,26 @@ impl File {
     }
 
     async fn handle_read(&self, read: requests::Read) -> Result<(), Error> {
-        let end = read.offset.saturating_add(read.size as u64);
-        let data = self.file.read_at(read.offset..end).await?;
-        Ok(read.reply(&data[..])?)
+        let offset = read.offset;
+        let end = offset.saturating_add(read.size as u64);
+        let block = self
+            .cache
+            .lookup(read.offset, || async move {
+                let data = self.file.read_at(offset..end).await?;
+                Ok(if data.is_empty() { None } else { Some(data) })
+            })
+            .await?;
+
+        Ok(match block {
+            None => read.reply(&[])?,
+            Some(data) => {
+                let in_block = (offset - data.block_offset) as usize;
+                eprintln!("in_block = {in_block} ({offset} - {})", data.block_offset);
+                let bytes: &[u8] = data.entry.data.as_ref();
+                let bytes = &bytes[in_block..];
+                let len = read.size.min(bytes.len());
+                read.reply(&bytes[..len])?
+            }
+        })
     }
 }
