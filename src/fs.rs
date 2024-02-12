@@ -94,7 +94,12 @@ impl Fs {
             Request::Lookup(r) => self.handle_lookup(r).await,
             Request::ReaddirPlus(r) => self.handle_readdir(r).await,
             Request::Read(r) => self.handle_read(r).await,
-            _ => todo!("unhandled request: {request:?}"),
+            Request::Open(r) => self.handle_open(r),
+            Request::Release(r) => self.handle_release(r),
+            _ => {
+                log::debug!("unhandled request: {request:?}");
+                return;
+            }
         };
 
         match res {
@@ -191,6 +196,36 @@ impl Fs {
             Some(entry) => entry.handle_read(read).await,
         }
     }
+
+    fn handle_open(self: Arc<Self>, open: requests::Open) -> Result<(), Error> {
+        if open.inode == ROOT_ID {
+            return self.root.handle_open(open);
+        }
+
+        let entry = self.fs.inodes.lock().unwrap().get(&open.inode).cloned();
+        match entry {
+            None => {
+                log::error!("open on forgotten inode");
+                Ok(open.fail(libc::ENOENT)?)
+            }
+            Some(entry) => entry.handle_open(open),
+        }
+    }
+
+    fn handle_release(self: Arc<Self>, release: requests::Release) -> Result<(), Error> {
+        if release.inode == ROOT_ID {
+            return self.root.handle_release(release);
+        }
+
+        let entry = self.fs.inodes.lock().unwrap().get(&release.inode).cloned();
+        match entry {
+            None => {
+                log::error!("release on forgotten inode");
+                Ok(release.fail(libc::ENOENT)?)
+            }
+            Some(entry) => entry.handle_release(release),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -266,6 +301,14 @@ impl Inode {
             Self::File(file) => file.handle_read(read).await,
         }
     }
+
+    fn handle_open(&self, open: requests::Open) -> Result<(), Error> {
+        Ok(open.reply(&self.entry_param(), 0)?)
+    }
+
+    fn handle_release(&self, release: requests::Release) -> Result<(), Error> {
+        Ok(release.reply()?)
+    }
 }
 
 struct Root {
@@ -327,6 +370,23 @@ impl Root {
 
     fn stat(&self) -> libc::stat {
         dir_stat(ROOT_ID)
+    }
+
+    fn handle_open(&self, open: requests::Open) -> Result<(), Error> {
+        Ok(open.reply(
+            &proxmox_fuse::EntryParam {
+                inode: ROOT_ID,
+                generation: 1,
+                attr: self.stat(),
+                attr_timeout: TIMEOUT,
+                entry_timeout: TIMEOUT,
+            },
+            0,
+        )?)
+    }
+
+    fn handle_release(&self, release: requests::Release) -> Result<(), Error> {
+        Ok(release.reply()?)
     }
 
     fn handle_readdir(&self, mut readdir: requests::ReaddirPlus) -> Result<(), Error> {
