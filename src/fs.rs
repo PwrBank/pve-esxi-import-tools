@@ -742,9 +742,20 @@ impl File {
         let mut response = Vec::new();
 
         let mut offset = read.offset;
-        let mut size = read.size;
+        if offset >= self.file.size() {
+            read.reply(&[])?;
+            return Ok(());
+        }
 
-        loop {
+        let end = offset + read.size as u64;
+        let end = end.min(self.file.size());
+        if end <= offset {
+            read.reply(&[])?;
+            return Ok(());
+        }
+        let mut size = (end - offset) as usize;
+
+        while size != 0 {
             let block = self
                 .cache
                 .lookup(offset, |from, to| async move {
@@ -755,9 +766,9 @@ impl File {
 
             match block {
                 None => break,
-                Some(data) => {
-                    let in_block = (offset - data.block_offset) as usize;
-                    let bytes: &[u8] = data.entry.data.as_ref();
+                Some(read_result) => {
+                    let in_block = (offset - read_result.block_offset) as usize;
+                    let bytes: &[u8] = read_result.entry.data.as_ref();
                     let bytes = &bytes[in_block..];
                     let len = size.min(bytes.len());
 
@@ -765,8 +776,9 @@ impl File {
                         read.reply(&bytes[..len])?;
                         return Ok(());
                     }
+
                     // we need to do a vectored result...
-                    response_refs.push(Arc::clone(&data.entry));
+                    response_refs.push(Arc::clone(&read_result.entry));
                     response.push(IoSlice::new(unsafe { &*(&bytes[..len] as *const [u8]) }));
                     offset += len as u64;
                     size -= len;
