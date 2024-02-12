@@ -79,7 +79,7 @@ impl Args {
 async fn main() -> Result<(), Error> {
     env_logger::builder()
         .filter_level(log::LevelFilter::Info)
-        .parse_default_env()
+        .parse_env("PROXMOX_ESXI_FUSE_LOG")
         .init();
 
     let mut args = std::env::args_os();

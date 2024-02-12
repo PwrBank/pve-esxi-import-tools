@@ -46,7 +46,7 @@ impl Cache {
 
     pub async fn lookup<Fut, F>(&self, offset: u64, fill: F) -> Result<Option<ReadResult>, Error>
     where
-        F: FnOnce() -> Fut,
+        F: FnOnce(u64, u64) -> Fut,
         Fut: Future<Output = Result<Option<Bytes>, Error>> + Send + Sync,
     {
         let block_offset = offset & self.block_mask;
@@ -65,7 +65,7 @@ impl Cache {
         fill: F,
     ) -> Result<Option<Arc<Entry>>, Error>
     where
-        F: FnOnce() -> Fut,
+        F: FnOnce(u64, u64) -> Fut,
         Fut: Future<Output = Result<Option<Bytes>, Error>> + Send + Sync,
     {
         {
@@ -89,11 +89,11 @@ impl Cache {
             };
             // This will almost always get a RecvError because the sender is immediately dropped,
             // but that's fine.
-            let _ = active.changed().await?;
+            let _ = active.changed().await;
             return Ok(active.borrow().clone());
         };
 
-        let result = match fill().await {
+        let result = match fill(block_offset, block_offset.saturating_add(self.block_size)).await {
             Err(err) => {
                 log::error!("cached read failed: {err:?}");
                 None
@@ -111,7 +111,9 @@ impl Cache {
             while entries.len() > self.block_count {
                 // FIXME: We could use an LRU logic here, but we do expect this to be mostly
                 // sequential reads...
-                entries.pop_first();
+                if let Some((offset, _)) = entries.pop_first() {
+                    log::info!("dropped cache entry for block at offset {offset}");
+                }
             }
         }
         send.send(result.clone())?;

@@ -86,7 +86,7 @@ impl Fs {
     }
 
     pub async fn handle_request(self: Arc<Self>, request: Request) {
-        log::info!("FUSE REQUEST: {request:?}");
+        log::debug!("FUSE REQUEST: {request:?}");
 
         let res = match request {
             Request::Getattr(r) => self.handle_getattr(r).await,
@@ -117,7 +117,7 @@ impl Fs {
 
     async fn handle_lookup(self: Arc<Self>, lookup: requests::Lookup) -> Result<(), Error> {
         let Some(file_name) = lookup.file_name.to_str() else {
-            log::info!("denying non-utf8 file name query");
+            log::error!("denying non-utf8 file name query");
             return Ok(lookup.fail(libc::ENOENT)?);
         };
 
@@ -302,8 +302,14 @@ impl Inode {
         }
     }
 
-    fn handle_open(&self, open: requests::Open) -> Result<(), Error> {
-        Ok(open.reply(&self.entry_param(), 0)?)
+    fn handle_open(&self, mut open: requests::Open) -> Result<(), Error> {
+        /*
+         * this does not help fix fuse's read behavior ;(
+         */
+        if matches!(self, Self::File(_)) {
+            open.file_info.set_direct_io(true);
+        }
+        Ok(open.reply(0)?)
     }
 
     fn handle_release(&self, release: requests::Release) -> Result<(), Error> {
@@ -373,16 +379,7 @@ impl Root {
     }
 
     fn handle_open(&self, open: requests::Open) -> Result<(), Error> {
-        Ok(open.reply(
-            &proxmox_fuse::EntryParam {
-                inode: ROOT_ID,
-                generation: 1,
-                attr: self.stat(),
-                attr_timeout: TIMEOUT,
-                entry_timeout: TIMEOUT,
-            },
-            0,
-        )?)
+        Ok(open.reply(0)?)
     }
 
     fn handle_release(&self, release: requests::Release) -> Result<(), Error> {
@@ -643,7 +640,7 @@ impl Dir {
                 return Ok(None);
             }
             Err(err) => {
-                log::info!("error? {err:?}");
+                log::error!("error looking up file or directory: {err:?}");
                 return Err(err);
             }
         };
@@ -739,25 +736,25 @@ impl File {
 
     async fn handle_read(&self, read: requests::Read) -> Result<(), Error> {
         let offset = read.offset;
-        let end = offset.saturating_add(read.size as u64);
         let block = self
             .cache
-            .lookup(read.offset, || async move {
-                let data = self.file.read_at(offset..end).await?;
+            .lookup(read.offset, |from, to| async move {
+                let data = self.file.read_at(from..to).await?;
                 Ok(if data.is_empty() { None } else { Some(data) })
             })
             .await?;
 
-        Ok(match block {
+        match block {
             None => read.reply(&[])?,
             Some(data) => {
                 let in_block = (offset - data.block_offset) as usize;
-                eprintln!("in_block = {in_block} ({offset} - {})", data.block_offset);
                 let bytes: &[u8] = data.entry.data.as_ref();
                 let bytes = &bytes[in_block..];
                 let len = read.size.min(bytes.len());
-                read.reply(&bytes[..len])?
+                read.reply(&bytes[..len])?;
             }
-        })
+        }
+
+        Ok(())
     }
 }
