@@ -105,7 +105,7 @@ impl Cache {
                 // FIXME: We could use an LRU logic here, but we do expect this to be mostly
                 // sequential reads...
                 if let Some((offset, _)) = entries.pop_first() {
-                    log::info!("dropped cache entry for block at offset {offset}");
+                    log::debug!("dropped cache entry for block at offset {offset}");
                 }
             }
         }
