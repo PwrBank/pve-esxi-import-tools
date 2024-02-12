@@ -117,31 +117,42 @@ impl EsxiClient {
     where
         F: FnMut() -> Result<http::request::Builder, Error>,
     {
-        let req = make_req()?
-            .header("authorization", &self.auth_header)
-            .body(Body::empty())
-            .context("failed to build http request")?;
+        let mut retry = 0;
+        loop {
+            retry += 1;
 
-        let response = self
-            .client
-            .request(req)
-            .await
-            .context("http request failed")?;
+            let req = make_req()?
+                .header("authorization", &self.auth_header)
+                .body(Body::empty())
+                .context("failed to build http request")?;
 
-        let status = response.status();
-        if status.as_u16() == 404 {
-            return Err(NotFound.into());
+            let response = self
+                .client
+                .request(req)
+                .await
+                .context("http request failed")?;
+
+            let status = response.status();
+            if status.as_u16() == 503 {
+                if retry < 5 {
+                    log::error!("rate limited, retrying...");
+                    continue;
+                }
+
+                log::error!("rate limited => {response:?}");
+                bail!("rate limited");
+            }
+
+            if status.as_u16() == 404 {
+                return Err(NotFound.into());
+            }
+
+            if !status.is_success() {
+                bail!("http error code {status:?}");
+            }
+
+            return Ok(response);
         }
-        if status.as_u16() == 503 {
-            log::error!("rate limited => {response:?}");
-            bail!("rate limited");
-        }
-
-        if !status.is_success() {
-            bail!("http error code {status:?}");
-        }
-
-        Ok(response)
     }
 
     /// Download a range from a file.
