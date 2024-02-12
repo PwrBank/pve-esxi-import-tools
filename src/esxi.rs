@@ -113,8 +113,11 @@ impl EsxiClient {
         )
     }
 
-    async fn make_request(&self, req: http::request::Builder) -> Result<Response<Body>, Error> {
-        let req = req
+    async fn make_request<F>(&self, mut make_req: F) -> Result<Response<Body>, Error>
+    where
+        F: FnMut() -> Result<http::request::Builder, Error>,
+    {
+        let req = make_req()?
             .header("authorization", &self.auth_header)
             .body(Body::empty())
             .context("failed to build http request")?;
@@ -154,16 +157,21 @@ impl EsxiClient {
     }
 
     async fn download_do(&self, query: &str, range: Option<Range<u64>>) -> Result<Bytes, Error> {
-        let mut req = Request::get(query);
+        let (parts, body) = self
+            .make_request(|| {
+                let mut req = Request::get(query);
 
-        if let Some(range) = range {
-            req = req.header(
-                "range",
-                &format!("bytes={}-{}", range.start, range.end.saturating_sub(1)),
-            )
-        }
+                if let Some(range) = &range {
+                    req = req.header(
+                        "range",
+                        &format!("bytes={}-{}", range.start, range.end.saturating_sub(1)),
+                    )
+                }
 
-        let (parts, body) = self.make_request(req).await?.into_parts();
+                Ok(req)
+            })
+            .await?
+            .into_parts();
 
         let content_type = parts.headers.get("content-type").ok_or_else(|| {
             format_err!(
@@ -187,7 +195,7 @@ impl EsxiClient {
         path: &str,
     ) -> Result<u64, Error> {
         let response = self
-            .make_request(Request::head(self.file_url(datacenter, datastore, path)))
+            .make_request(|| Ok(Request::head(self.file_url(datacenter, datastore, path))))
             .await?;
 
         let headers = response.headers();
@@ -229,32 +237,6 @@ impl EsxiClient {
             state: ReadState::New,
         })
     }
-
-    /*
-    /// Check if a datacenter exists.
-    pub async fn datacenter_exists(&self, datacenter: &str) -> Result<bool, Error> {
-        match self
-            .make_request(Request::head(self.datacenter_url(datacenter)))
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(err) if err.downcast_ref::<NotFound>().is_some() => Ok(false),
-            Err(err) => Err(err),
-        }
-    }
-
-    /// Check if a datastore exists.
-    pub async fn datastore_exists(&self, datacenter: &str, datastore: &str) -> Result<bool, Error> {
-        match self
-            .make_request(Request::head(self.datastore_url(datacenter, datastore)))
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(err) if err.downcast_ref::<NotFound>().is_some() => Ok(false),
-            Err(err) => Err(err),
-        }
-    }
-    */
 }
 
 enum ReadState {
