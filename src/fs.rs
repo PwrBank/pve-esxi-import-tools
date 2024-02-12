@@ -1,6 +1,7 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::error::Error as StdError;
 use std::fmt;
+use std::io::IoSlice;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -303,9 +304,6 @@ impl Inode {
     }
 
     fn handle_open(&self, mut open: requests::Open) -> Result<(), Error> {
-        /*
-         * this does not help fix fuse's read behavior ;(
-         */
         if matches!(self, Self::File(_)) {
             open.file_info.set_direct_io(true);
         }
@@ -738,26 +736,49 @@ impl File {
     }
 
     async fn handle_read(&self, read: requests::Read) -> Result<(), Error> {
-        let offset = read.offset;
-        let block = self
-            .cache
-            .lookup(read.offset, |from, to| async move {
-                let data = self.file.read_at(from..to).await?;
-                Ok(if data.is_empty() { None } else { Some(data) })
-            })
-            .await?;
+        // Holds the Arcs to the data we reference.
+        let mut response_refs = Vec::new();
+        // Holds the iovecs.
+        let mut response = Vec::new();
 
-        match block {
-            None => read.reply(&[])?,
-            Some(data) => {
-                let in_block = (offset - data.block_offset) as usize;
-                let bytes: &[u8] = data.entry.data.as_ref();
-                let bytes = &bytes[in_block..];
-                let len = read.size.min(bytes.len());
-                read.reply(&bytes[..len])?;
+        let mut offset = read.offset;
+        let mut size = read.size;
+
+        loop {
+            let block = self
+                .cache
+                .lookup(offset, |from, to| async move {
+                    let data = self.file.read_at(from..to).await?;
+                    Ok(if data.is_empty() { None } else { Some(data) })
+                })
+                .await?;
+
+            match block {
+                None => break,
+                Some(data) => {
+                    let in_block = (offset - data.block_offset) as usize;
+                    let bytes: &[u8] = data.entry.data.as_ref();
+                    let bytes = &bytes[in_block..];
+                    let len = size.min(bytes.len());
+
+                    if response.is_empty() && size <= len {
+                        read.reply(&bytes[..len])?;
+                        return Ok(());
+                    }
+                    // we need to do a vectored result...
+                    response_refs.push(Arc::clone(&data.entry));
+                    response.push(IoSlice::new(unsafe { &*(&bytes[..len] as *const [u8]) }));
+                    offset += len as u64;
+                    size -= len;
+                }
             }
         }
 
+        if response.is_empty() {
+            read.reply(&[])?;
+        } else {
+            read.reply_vectored(&response)?;
+        }
         Ok(())
     }
 }
