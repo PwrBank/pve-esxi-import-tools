@@ -40,7 +40,7 @@ impl fmt::Display for IsDirectory {
 
 impl StdError for IsDirectory {}
 
-const QUERY_ESC: AsciiSet = percent_encoding::CONTROLS.add(b'?');
+const PATH_ESCAPE_ALPHABET: AsciiSet = percent_encoding::NON_ALPHANUMERIC.remove(b'/');
 
 pub struct EsxiClient {
     client: Client,
@@ -105,7 +105,7 @@ impl EsxiClient {
     fn file_url(&self, datacenter: &str, datastore: &str, path: &str) -> String {
         let datacenter = percent_encode(datacenter.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
         let datastore = percent_encode(datastore.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
-        let path = percent_encode(path.as_bytes(), &QUERY_ESC);
+        let path = percent_encode(path.as_bytes(), &PATH_ESCAPE_ALPHABET);
 
         format!(
             "{}/{path}?dcName={datacenter}&dsName={datastore}",

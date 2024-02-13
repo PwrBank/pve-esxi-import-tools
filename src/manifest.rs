@@ -56,3 +56,26 @@ pub struct VmConfig {
     pub datastore: String,
     pub path: String,
 }
+
+impl Manifest {
+    /// Try to resolve a `/vmfs/volumes/<uuid>` path into a datastore+path tuple.
+    pub fn resolve_path<'a, 'p>(
+        &'a self,
+        datacenter: &str,
+        path: &'p str,
+    ) -> Option<(&'a str, &'p str)> {
+        self.datacenters.get(datacenter)?.resolve_path(path)
+    }
+}
+
+impl Datacenter {
+    /// Try to resolve a `/vmfs/volumes/<uuid>` path into a datastore+path tuple.
+    pub fn resolve_path<'a, 'p>(&'a self, path: &'p str) -> Option<(&'a str, &'p str)> {
+        for (datastore, ds_path) in &self.datastores {
+            if let Some(path) = path.strip_prefix(ds_path) {
+                return Some((datastore, path));
+            }
+        }
+        None
+    }
+}

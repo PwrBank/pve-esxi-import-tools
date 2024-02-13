@@ -20,6 +20,7 @@ use fs::Inode;
 
 static mut FILE_CACHE_PAGE_SIZE: u64 = 8 << 20;
 static mut FILE_CACHE_PAGE_COUNT: usize = 8;
+static mut MANIFEST: Option<manifest::Manifest> = None;
 
 pub fn file_cache_page_size() -> u64 {
     unsafe { FILE_CACHE_PAGE_SIZE }
@@ -29,13 +30,16 @@ pub fn file_cache_page_count() -> usize {
     unsafe { FILE_CACHE_PAGE_COUNT }
 }
 
+/// gets filled immediately after argument parsing and will be used throughout
+pub fn manifest() -> &'static manifest::Manifest {
+    unsafe { MANIFEST.as_ref().unwrap() }
+}
+
 struct Args {
     url: String,
     user: String,
     password: String,
-    datacenter: String,
-    datastore: String,
-    config_file: String,
+    manifest: OsString,
     mount_path: OsString,
 }
 
@@ -52,7 +56,7 @@ impl Args {
 
         let _ = std::io::stderr().write_all(b"usage: ");
         let _ = std::io::stderr().write_all(arg0.as_bytes());
-        eprintln!(" <baseurl> <user> <password> <datacenter> <datastore> <vm-config-file-path> <mount-path>");
+        eprintln!(" <baseurl> <user> <password> <manifest-file> <mount-path>");
 
         std::process::exit(1);
     }
@@ -71,9 +75,9 @@ impl Args {
             url: next()?,
             user: next()?,
             password: next()?,
-            datacenter: next()?,
-            datastore: next()?,
-            config_file: next()?,
+            manifest: args
+                .next()
+                .ok_or_else(|| format_err!("missing manifest path"))?,
             mount_path: args
                 .next()
                 .ok_or_else(|| format_err!("missing mount path"))?,
@@ -87,8 +91,7 @@ impl Args {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Error> {
+fn parse_args() -> Result<Args, Error> {
     let arg0 = std::env::args_os().next().unwrap();
 
     let mut log_filter_level = None;
@@ -121,7 +124,24 @@ async fn main() -> Result<(), Error> {
     }
     { env_logger }.init();
 
-    let args = Args::from_vec(&arg0, args.finish());
+    Ok(Args::from_vec(&arg0, args.finish()))
+}
+
+fn parse_manifest(manifest_path: &OsStr) -> Result<(), Error> {
+    let data = std::fs::read(manifest_path).context("failed to read manifest")?;
+
+    let manifest = serde_json::from_slice(&data).context("failed to parse manifest")?;
+    unsafe {
+        MANIFEST = Some(manifest);
+    }
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let args = parse_args()?;
+    parse_manifest(&args.manifest)?;
 
     let mut connector = SslConnector::builder(SslMethod::tls()).unwrap();
     connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
@@ -134,27 +154,43 @@ async fn main() -> Result<(), Error> {
         connector,
     ));
 
-    let config = vmx::VmConfig::parse(
-        client
-            .open_file(&args.datacenter, &args.datastore, &args.config_file)
-            .await?,
-        &args.config_file,
-    )
-    .await?;
+    let fs = fs::Fs::new(Arc::clone(&client));
 
-    println!("{config:#?}");
+    for (datacenter, dc) in &manifest().datacenters {
+        let fs_datacenter = fs.create_datacenter(datacenter);
 
-    let fs = fs::Fs::new(client);
-    let datacenter = fs.create_datacenter(&args.datacenter);
-    let datastore = datacenter.create_datastore(&args.datastore);
+        for config in dc.vm_configs.values() {
+            let manifest::VmConfig { datastore, path } = config;
+            let fs_datastore = fs_datacenter.create_datastore(datastore);
 
-    for disk in config.disks.values() {
-        if disk.starts_with('/') {
-            log::info!("skipping absolute path - volume mapping required for {disk:?}");
-            continue;
+            println!("loading {datacenter:?}/{datastore:?}/{path:?}");
+            let config =
+                vmx::VmConfig::parse(client.open_file(datacenter, datastore, path).await?, path)
+                    .await?;
+            println!("{config:#?}");
+            for disk in config.disks.values() {
+                let other_fs_datastore;
+                let (fs_datastore, datastore, path) = if disk.starts_with('/') {
+                    if let Some((datastore, path)) = manifest().resolve_path(datacenter, disk) {
+                        other_fs_datastore = fs_datacenter.create_datastore(datastore);
+                        (&other_fs_datastore, datastore, path)
+                    } else {
+                        log::info!("ignoring {disk:?} - not found");
+                        continue;
+                    }
+                } else {
+                    (&fs_datastore, datastore.as_str(), path.as_str())
+                };
+
+                if check_file_exists(fs_datastore, disk).await? {
+                    log::info!(
+                        "discovered {disk:?} found at {datacenter:?}/{datastore:?}/{path:?}"
+                    );
+                } else {
+                    log::info!("ignoring {disk:?} - not found");
+                }
+            }
         }
-
-        assert_file_exists(&datastore, disk).await?;
     }
 
     run_fuse(args.mount_path, fs).await?;
@@ -162,7 +198,7 @@ async fn main() -> Result<(), Error> {
     Ok(())
 }
 
-async fn assert_file_exists(datastore: &Arc<fs::Dir>, path: &str) -> Result<(), Error> {
+async fn check_file_exists(datastore: &Arc<fs::Dir>, path: &str) -> Result<bool, Error> {
     log::info!("checking for path {path:?}");
 
     let mut at = Arc::clone(datastore);
@@ -171,9 +207,9 @@ async fn assert_file_exists(datastore: &Arc<fs::Dir>, path: &str) -> Result<(), 
         if iter.peek().is_none() {
             // this is a file!
             match at.lookup(component).await? {
-                None => bail!("file not found on remote: {path:?}"),
+                None => return Ok(false),
                 Some(Inode::File(_)) => {
-                    log::info!("found file {path:?}");
+                    log::debug!("found file {path:?}");
                     break;
                 }
                 Some(_) => bail!("file expected, but found a directory at: {path:?}"),
@@ -184,11 +220,11 @@ async fn assert_file_exists(datastore: &Arc<fs::Dir>, path: &str) -> Result<(), 
             Some(Inode::Dir(dir)) => {
                 at = dir;
             }
-            _ => bail!("file not found on remote: {path:?}"),
+            _ => return Ok(false),
         }
     }
 
-    Ok(())
+    Ok(true)
 }
 
 async fn run_fuse(path: OsString, fs: Arc<fs::Fs>) -> Result<(), Error> {
