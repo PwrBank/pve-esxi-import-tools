@@ -16,6 +16,7 @@ openssl = "0.10.57"
 percent-encoding = "2.2"
 pico-args = "0.4.2"
 regex = "1.7.1"
+serde = { version = "1", features = [ "derive" ] }
 tokio = { version = "1", features = [ "macros", "rt-multi-thread", "time" ] }
 
 #proxmox-fuse = "0.1.4"

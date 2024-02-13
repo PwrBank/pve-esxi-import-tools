@@ -12,6 +12,7 @@ use proxmox_fuse::Fuse;
 mod cache;
 mod esxi;
 mod fs;
+mod manifest;
 mod vmx;
 
 use esxi::EsxiClient;
