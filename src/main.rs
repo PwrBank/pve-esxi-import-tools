@@ -175,7 +175,7 @@ async fn main() -> Result<(), Error> {
                         other_fs_datastore = fs_datacenter.create_datastore(datastore);
                         (&other_fs_datastore, datastore, path)
                     } else {
-                        log::info!("ignoring {disk:?} - not found");
+                        log::info!("ignoring {disk:?} - failed to resolve datastore");
                         continue;
                     }
                 } else {
@@ -199,8 +199,6 @@ async fn main() -> Result<(), Error> {
 }
 
 async fn check_file_exists(datastore: &Arc<fs::Dir>, path: &str) -> Result<bool, Error> {
-    log::info!("checking for path {path:?}");
-
     let mut at = Arc::clone(datastore);
     let mut iter = path.split('/').peekable();
     while let Some(component) = iter.next() {
