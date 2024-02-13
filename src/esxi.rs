@@ -89,7 +89,7 @@ impl EsxiClient {
     fn datacenter_url(&self, datacenter: &str) -> String {
         let datacenter = percent_encode(datacenter.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
 
-        format!("{}/?dcName={datacenter}", self.folder_url)
+        format!("{}/?dcPath={datacenter}", self.folder_url)
     }
 
     fn datastore_url(&self, datacenter: &str, datastore: &str) -> String {
@@ -97,7 +97,7 @@ impl EsxiClient {
         let datastore = percent_encode(datastore.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
 
         format!(
-            "{}/?dcName={datacenter}&dsName={datastore}",
+            "{}/?dcPath={datacenter}&dsName={datastore}",
             self.folder_url
         )
     }
@@ -108,7 +108,7 @@ impl EsxiClient {
         let path = percent_encode(path.as_bytes(), &PATH_ESCAPE_ALPHABET);
 
         format!(
-            "{}/{path}?dcName={datacenter}&dsName={datastore}",
+            "{}/{path}?dcPath={datacenter}&dsName={datastore}",
             self.folder_url
         )
     }
