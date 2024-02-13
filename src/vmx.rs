@@ -10,6 +10,7 @@ static DISK_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("failed to create disk key regex")
 });
 
+/// A parsed VM config. This contains only the data we are actually interested in.
 #[derive(Debug, Default)]
 pub struct VmConfig {
     /// maps `scsiX:Y`, `ideX:Y` to file names

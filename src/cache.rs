@@ -10,10 +10,22 @@ use hyper::body::Bytes;
 use tokio::sync::watch;
 
 pub struct Cache {
+    /// Each entry in `entries` has this size.
     block_size: u64,
+
+    /// Entries are powers of two and so we cache the bit mask used to translate arbitrary offsets
+    /// to their containing block here.
     block_mask: u64,
+
+    /// This is the number of blocks this cache can hold. Currently this is always equal to the
+    /// maximum defined by the CLI parameters.
     block_count: usize,
+
+    /// This maps an offset to the cached data.
     entries: Mutex<BTreeMap<u64, Arc<Entry>>>,
+
+    /// This contains the currently active lookups, so we don't read the same block multiple times
+    /// simultaneously.
     active_lookups: Mutex<BTreeMap<u64, watch::Receiver<Option<Arc<Entry>>>>>,
 }
 

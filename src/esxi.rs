@@ -42,6 +42,7 @@ impl StdError for IsDirectory {}
 
 const PATH_ESCAPE_ALPHABET: AsciiSet = percent_encoding::NON_ALPHANUMERIC.remove(b'/');
 
+/// The HTTP client used to download files (or parts of files) from an esxi or vcenter host.
 pub struct EsxiClient {
     client: Client,
     folder_url: String,
@@ -49,6 +50,8 @@ pub struct EsxiClient {
 }
 
 impl EsxiClient {
+    /// Create a new client - we need a URL, use and password. Additionally we have an SSL
+    /// connector which deals with TLS/certificates, this is left up to the caller.
     pub fn new<S0, S1, S2>(base_url: &S0, user: &S1, password: &S2, connector: SslConnector) -> Self
     where
         S0: fmt::Display + ?Sized,
@@ -258,6 +261,8 @@ enum ReadState {
     Eof,
 }
 
+/// This provides `AsyncRead` for a remote file, so that we can use it with eg. tokio's `BufReader`
+/// to parse config files and avoid downloading the entire thing at once.
 pub struct EsxiFile {
     client: Arc<EsxiClient>,
     query: Arc<str>,
@@ -267,10 +272,13 @@ pub struct EsxiFile {
 }
 
 impl EsxiFile {
+    /// Get the file size. This is cached from the `HEAD` request made at `open_file` time, so if
+    /// the file size changes in between, this is not updated.
     pub fn size(&self) -> u64 {
         self.size
     }
 
+    /// Read an arbitrary range of data from the file.
     pub async fn read_at(&self, range: Range<u64>) -> Result<Bytes, Error> {
         self.client.download_do(&self.query, Some(range)).await
     }

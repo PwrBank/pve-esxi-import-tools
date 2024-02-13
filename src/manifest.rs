@@ -41,6 +41,7 @@ pub struct Manifest {
     pub datacenters: HashMap<String, Datacenter>,
 }
 
+/// See the [`Manifest`] for an example.
 #[derive(Debug, Deserialize)]
 pub struct Datacenter {
     /// Datastores simply map to their paths.
@@ -50,12 +51,14 @@ pub struct Datacenter {
     pub vms: HashMap<String, Vm>,
 }
 
+/// Currently only stores the info about the configuration file.
 #[derive(Debug, Deserialize)]
 pub struct Vm {
     /// VMs just reference their config file via datastore and path.
     pub config: VmConfig,
 }
 
+/// Datastore and path of the actual file.
 #[derive(Debug, Deserialize)]
 pub struct VmConfig {
     pub datastore: String,
