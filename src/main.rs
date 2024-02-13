@@ -18,7 +18,7 @@ mod vmx;
 use esxi::EsxiClient;
 use fs::Inode;
 
-static mut FILE_CACHE_PAGE_SIZE: u64 = 8 << 20;
+static mut FILE_CACHE_PAGE_SIZE: u64 = 32 << 20;
 static mut FILE_CACHE_PAGE_COUNT: usize = 8;
 static mut MANIFEST: Option<manifest::Manifest> = None;
 
