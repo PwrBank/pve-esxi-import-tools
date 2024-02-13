@@ -46,15 +46,21 @@ pub struct Datacenter {
     /// Datastores simply map to their paths.
     pub datastores: HashMap<String, String>,
 
+    /// The VM list.
+    pub vms: HashMap<String, Vm>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Vm {
     /// VMs just reference their config file via datastore and path.
-    #[serde(rename = "vm-configs")]
-    pub vm_configs: HashMap<String, VmConfig>,
+    pub config: VmConfig,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct VmConfig {
     pub datastore: String,
     pub path: String,
+    // currently not using the checksum
 }
 
 impl Manifest {

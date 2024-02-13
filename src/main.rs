@@ -159,8 +159,8 @@ async fn main() -> Result<(), Error> {
     for (datacenter, dc) in &manifest().datacenters {
         let fs_datacenter = fs.create_datacenter(datacenter);
 
-        for config in dc.vm_configs.values() {
-            let manifest::VmConfig { datastore, path } = config;
+        for vm in dc.vms.values() {
+            let manifest::VmConfig { datastore, path } = &vm.config;
             let fs_datastore = fs_datacenter.create_datastore(datastore);
 
             println!("loading {datacenter:?}/{datastore:?}/{path:?}");
