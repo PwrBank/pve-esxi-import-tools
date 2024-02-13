@@ -179,15 +179,17 @@ async fn main() -> Result<(), Error> {
                         continue;
                     }
                 } else {
-                    (&fs_datastore, datastore.as_str(), path.as_str())
+                    (&fs_datastore, datastore.as_str(), disk.as_str())
                 };
 
-                if check_file_exists(fs_datastore, disk).await? {
+                if check_file_exists(fs_datastore, path).await? {
                     log::info!(
                         "discovered {disk:?} found at {datacenter:?}/{datastore:?}/{path:?}"
                     );
                 } else {
-                    log::info!("ignoring {disk:?} - not found");
+                    log::info!(
+                        "ignoring {disk:?} - not found at {datacenter:?}/{datastore:?}/{path:?}"
+                    );
                 }
             }
         }
@@ -202,6 +204,10 @@ async fn check_file_exists(datastore: &Arc<fs::Dir>, path: &str) -> Result<bool,
     let mut at = Arc::clone(datastore);
     let mut iter = path.split('/').peekable();
     while let Some(component) = iter.next() {
+        if component.is_empty() {
+            continue;
+        }
+
         if iter.peek().is_none() {
             // this is a file!
             match at.lookup(component).await? {
