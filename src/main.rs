@@ -40,7 +40,7 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
     let _ = out.write_all(arg0.as_bytes());
     let _ = writeln!(
         out,
-        "[options] <url> <manifest-file> <mount-path>\n\
+        " [options] <url> <manifest-file> <mount-path>\n\
         options:\n  \
           --cache-page-size=BYTES     size of a per-file cache entry\n  \
           --cache-page-count=COUNT    number of cache entries per file\n  \
@@ -49,7 +49,7 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
           --password-file=FILEM       read password from a file\n  \
           --password-fd=FDNUM         read password from a file descriptor\n  \
           --user-file=PATH            read both user name and password from a file\n  \
-          -o MOUNT_OPTIONS            pass a mount option to fuse\n\
+          -o MOUNT_OPTIONS            pass a mount option to fuse, such as allow_other\n\
         "
     );
 
