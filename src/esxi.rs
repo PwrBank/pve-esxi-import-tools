@@ -68,8 +68,8 @@ impl EsxiClient {
     }
 
     fn file_url(&self, datacenter: &str, datastore: &str, path: &str) -> String {
-        let datacenter = percent_encode(datacenter.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
-        let datastore = percent_encode(datastore.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
+        let datacenter = percent_encode(datacenter.as_bytes(), percent_encoding::NON_ALPHANUMERIC);
+        let datastore = percent_encode(datastore.as_bytes(), percent_encoding::NON_ALPHANUMERIC);
         let path = percent_encode(path.as_bytes(), &PATH_ESCAPE_ALPHABET);
 
         format!(

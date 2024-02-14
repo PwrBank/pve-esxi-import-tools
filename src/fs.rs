@@ -123,12 +123,12 @@ impl Fs {
         };
 
         let inode = if lookup.parent == ROOT_ID {
-            self.root.handle_lookup(&file_name)
+            self.root.handle_lookup(file_name)
         } else {
             let parent = self.fs.inodes.lock().unwrap().get(&lookup.parent).cloned();
             match parent {
                 None => None,
-                Some(parent) => match parent.handle_lookup(&file_name).await {
+                Some(parent) => match parent.handle_lookup(file_name).await {
                     Ok(res) => res,
                     Err(err) => match err.downcast::<Errno>() {
                         Ok(Errno(err)) => return Ok(lookup.fail(err)?),
@@ -324,7 +324,7 @@ impl Root {
         let mut datacenters = self.datacenters.lock().unwrap();
         if let Some(inode) = datacenters.get(name).copied() {
             match self.fs.inodes.lock().unwrap().get(&inode).unwrap() {
-                Inode::Datacenter(dc) => return Arc::clone(&dc),
+                Inode::Datacenter(dc) => return Arc::clone(dc),
                 _ => panic!("create_datacenter hit a non-datacenter inode"),
             }
         }
@@ -408,7 +408,7 @@ impl Datacenter {
         let mut datastores = self.datastores.lock().unwrap();
         if let Some(inode) = datastores.get(name).copied() {
             match self.fs.inodes.lock().unwrap().get(&inode).unwrap() {
-                Inode::Dir(dir) => return Arc::clone(&dir),
+                Inode::Dir(dir) => return Arc::clone(dir),
                 _ => panic!("create_datastore hit a non-directory inode"),
             }
         }

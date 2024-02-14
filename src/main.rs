@@ -72,7 +72,7 @@ struct Args {
 }
 
 impl Args {
-    fn from_vec(&mut self, args: Vec<OsString>) -> Result<(), Error> {
+    fn parse_vec(&mut self, args: Vec<OsString>) -> Result<(), Error> {
         let mut args = args.into_iter();
         let mut next = || {
             let arg = args
@@ -163,7 +163,7 @@ fn parse_args() -> Result<Args, Error> {
     }
     { env_logger }.init();
 
-    args.from_vec(argparse.finish())?;
+    args.parse_vec(argparse.finish())?;
 
     Ok(args)
 }
