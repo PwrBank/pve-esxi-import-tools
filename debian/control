@@ -1,0 +1,46 @@
+Source: rust-proxmox-esxi-import
+Section: admin
+Priority: optional
+Build-Depends: cargo:native (>= 0.65.0~),
+               debhelper (>= 12~),
+               debhelper-compat (= 13),
+               dh-cargo (>= 25),
+               libfuse3-dev,
+               librust-anyhow-1+default-dev,
+               librust-env-logger-0.10+default-dev,
+               librust-futures-0.3+default-dev (>= 0.3.28-~~),
+               librust-http-0.2+default-dev (>= 0.2.9-~~),
+               librust-hyper-0.14+default-dev,
+               librust-libc-0.2+default-dev,
+               librust-log-0.4+default-dev,
+               librust-once-cell-1+default-dev (>= 1.17-~~),
+               librust-openssl-0.10+default-dev (>= 0.10.57-~~),
+               librust-percent-encoding-2+default-dev (>= 2.2-~~),
+               librust-pico-args-0.4+default-dev (>= 0.4.2-~~),
+               librust-proxmox-fuse-0.1+default-dev (>= 0.1.6-~~),
+               librust-proxmox-http-0.9+client-dev,
+               librust-proxmox-http-0.9+default-dev,
+               librust-regex-1+default-dev (>= 1.7.1-~~),
+               librust-serde-1+default-dev,
+               librust-serde-1+derive-dev,
+               librust-serde-json-1+default-dev,
+               librust-tokio-1+default-dev,
+               librust-tokio-1+macros-dev,
+               librust-tokio-1+rt-multi-thread-dev,
+               librust-tokio-1+time-dev,
+               libstd-rust-dev,
+               python3,
+               python3-pyvmomi,
+               rustc:native,
+Maintainer: Proxmox Support Team <support@proxmox.com>
+Standards-Version: 4.6.2
+Homepage: https://www.proxmox.com
+Rules-Requires-Root: no
+
+Package: proxmox-esxi-import
+Architecture: any
+Depends: ${misc:Depends},
+         ${shlibs:Depends},
+Description: Tools to allow importing VMs from ESXi hosts
+ Provides a FUSE file system to access files on ESXi hosts and a python utility
+ to query the list of VMs and datastores.

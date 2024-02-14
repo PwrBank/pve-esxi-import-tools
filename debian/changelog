@@ -1,0 +1,5 @@
+rust-proxmox-esxi-import (0.0.1) bookworm; urgency=medium
+
+  * initial build
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 14 Feb 2024 17:15:35 +0100
