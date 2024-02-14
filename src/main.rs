@@ -46,6 +46,7 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
           --cache-page-count=COUNT    number of cache entries per file\n  \
           --user=USERNAME             user to login as\n  \
           --password=PASSWORD         the user's password\n  \
+          --password-file=FILEM       read password from a file\n  \
           --password-fd=FDNUM         read password from a file descriptor\n  \
           --user-file=PATH            read both user name and password from a file\n  \
           -o MOUNT_OPTIONS            pass a mount option to fuse\n\
@@ -111,6 +112,14 @@ fn parse_args() -> Result<Args, Error> {
     }
     if let Some(value) = argparse.opt_value_from_str("--password")? {
         args.password = value;
+    }
+    if let Some(value) =
+        argparse.opt_value_from_os_str("--password-file", |os| Ok::<_, Error>(os.to_owned()))?
+    {
+        args.password = std::fs::read_to_string(value).context("failed to read file {value:?}")?;
+        if args.password.ends_with('\n') {
+            args.password.pop();
+        }
     }
     if let Some(value) = argparse.opt_value_from_str("--password-fd")? {
         use std::io::Read as _;
