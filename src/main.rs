@@ -202,11 +202,11 @@ async fn main() -> Result<(), Error> {
             let manifest::VmConfig { datastore, path } = &vm.config;
             let fs_datastore = fs_datacenter.create_datastore(datastore);
 
-            println!("loading {datacenter:?}/{datastore:?}/{path:?}");
+            log::debug!("loading {datacenter:?}/{datastore:?}/{path:?}");
             let config =
                 vmx::VmConfig::parse(client.open_file(datacenter, datastore, path).await?, path)
                     .await?;
-            println!("{config:#?}");
+            log::debug!("{config:#?}");
             for disk in config.disks.values() {
                 let other_fs_datastore;
                 let (fs_datastore, datastore, path) = if disk.starts_with('/') {
@@ -280,6 +280,7 @@ async fn run_fuse(
         .enable_open()
         .enable_read()
         .enable_readdirplus();
+
     for opt in mount_options {
         fuse = fuse.options_os(&opt)?;
     }
