@@ -48,6 +48,7 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
           --password=PASSWORD         the user's password\n  \
           --password-fd=FDNUM         read password from a file descriptor\n  \
           --user-file=PATH            read both user name and password from a file\n  \
+          -o MOUNT_OPTIONS            pass a mount option to fuse\n\
         "
     );
 
@@ -59,6 +60,7 @@ struct Args {
     // options:
     user: String,
     password: String,
+    mount_options: Vec<OsString>,
 
     // positional:
     url: String,
@@ -101,6 +103,9 @@ fn parse_args() -> Result<Args, Error> {
     let mut argparse = pico_args::Arguments::from_env();
     let mut args = Args::default();
 
+    if let Some(value) = argparse.opt_value_from_os_str("-o", |os| Ok::<_, Error>(os.to_owned()))? {
+        args.mount_options.push(value);
+    }
     if let Some(value) = argparse.opt_value_from_str("--user")? {
         args.user = value;
     }
@@ -229,7 +234,7 @@ async fn main() -> Result<(), Error> {
         }
     }
 
-    run_fuse(args.mount_path, fs).await?;
+    run_fuse(args.mount_path, fs, args.mount_options).await?;
 
     Ok(())
 }
@@ -265,12 +270,21 @@ async fn check_file_exists(datastore: &Arc<fs::Dir>, path: &str) -> Result<bool,
     Ok(true)
 }
 
-async fn run_fuse(path: OsString, fs: Arc<fs::Fs>) -> Result<(), Error> {
+async fn run_fuse(
+    path: OsString,
+    fs: Arc<fs::Fs>,
+    mount_options: Vec<OsString>,
+) -> Result<(), Error> {
     let mut fuse = Fuse::builder("esxi-folder-fuse")
         .context("failed to create fuse session builder")?
         .enable_open()
         .enable_read()
-        .enable_readdirplus()
+        .enable_readdirplus();
+    for opt in mount_options {
+        fuse = fuse.options_os(&opt)?;
+    }
+
+    let mut fuse = fuse
         .build()
         .context("failed to create fuse session")?
         .mount(Path::new(&path))
