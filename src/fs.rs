@@ -230,7 +230,7 @@ impl Fs {
 }
 
 #[derive(Clone)]
-pub(crate) enum Inode {
+pub enum Inode {
     Datacenter(Arc<Datacenter>),
     Dir(Arc<Dir>),
     File(Arc<File>),
@@ -407,7 +407,7 @@ impl Root {
     }
 }
 
-pub(crate) struct Datacenter {
+pub struct Datacenter {
     fs: Arc<FsBase>,
     inode: u64,
     datacenter: String,
@@ -498,7 +498,7 @@ impl Datacenter {
     }
 }
 
-pub(crate) struct Dir {
+pub struct Dir {
     fs: Arc<FsBase>,
     parent: u64,
     inode: u64,
@@ -696,7 +696,7 @@ impl Dir {
     }
 }
 
-pub(crate) struct File {
+pub struct File {
     fs: Arc<FsBase>,
     inode: u64,
     datacenter: String,

@@ -35,33 +35,41 @@ pub fn manifest() -> &'static manifest::Manifest {
     unsafe { MANIFEST.as_ref().unwrap() }
 }
 
+fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
+    let _ = out.write_all(b"usage: ");
+    let _ = out.write_all(arg0.as_bytes());
+    let _ = writeln!(
+        out,
+        "[options] <url> <manifest-file> <mount-path>\n\
+        options:\n  \
+          --cache-page-size=BYTES     size of a per-file cache entry\n  \
+          --cache-page-count=COUNT    number of cache entries per file\n  \
+          --user=USERNAME             user to login as\n  \
+          --password=PASSWORD         the user's password\n  \
+          --password-fd=FDNUM         read password from a file descriptor\n  \
+          --user-file=PATH            read both user name and password from a file\n  \
+        "
+    );
+
+    std::process::exit(exit);
+}
+
+#[derive(Default)]
 struct Args {
-    url: String,
+    // options:
     user: String,
     password: String,
+
+    // positional:
+    url: String,
+    // user: String,
+    // password: String,
     manifest: OsString,
     mount_path: OsString,
 }
 
 impl Args {
-    fn from_vec(arg0: &OsStr, args: Vec<OsString>) -> Self {
-        use std::io::Write as _;
-
-        let err = match Self::from_vec_do(args) {
-            Ok(this) => return this,
-            Err(err) => err,
-        };
-
-        eprintln!("error: {err}");
-
-        let _ = std::io::stderr().write_all(b"usage: ");
-        let _ = std::io::stderr().write_all(arg0.as_bytes());
-        eprintln!(" <baseurl> <user> <password> <manifest-file> <mount-path>");
-
-        std::process::exit(1);
-    }
-
-    fn from_vec_do(args: Vec<OsString>) -> Result<Self, Error> {
+    fn from_vec(&mut self, args: Vec<OsString>) -> Result<(), Error> {
         let mut args = args.into_iter();
         let mut next = || {
             let arg = args
@@ -71,47 +79,64 @@ impl Args {
                 .map_err(|_| format_err!("non utf-8 parameter"))
         };
 
-        let this = Self {
-            url: next()?,
-            user: next()?,
-            password: next()?,
-            manifest: args
-                .next()
-                .ok_or_else(|| format_err!("missing manifest path"))?,
-            mount_path: args
-                .next()
-                .ok_or_else(|| format_err!("missing mount path"))?,
-        };
+        self.url = next()?;
+        self.manifest = args
+            .next()
+            .ok_or_else(|| format_err!("missing manifest path"))?;
+        self.mount_path = args
+            .next()
+            .ok_or_else(|| format_err!("missing mount path"))?;
 
         if args.next().is_some() {
             bail!("too many parameters");
         }
 
-        Ok(this)
+        Ok(())
     }
 }
 
 fn parse_args() -> Result<Args, Error> {
-    let arg0 = std::env::args_os().next().unwrap();
-
     let mut log_filter_level = None;
 
-    let mut args = pico_args::Arguments::from_env();
+    let mut argparse = pico_args::Arguments::from_env();
+    let mut args = Args::default();
 
-    if let Some(value) = args.opt_value_from_str("--cache-page-size")? {
+    if let Some(value) = argparse.opt_value_from_str("--user")? {
+        args.user = value;
+    }
+    if let Some(value) = argparse.opt_value_from_str("--password")? {
+        args.password = value;
+    }
+    if let Some(value) = argparse.opt_value_from_str("--password-fd")? {
+        use std::io::Read as _;
+        use std::os::fd::FromRawFd as _;
+
+        let mut file = unsafe { std::fs::File::from_raw_fd(value) };
+        args.password.clear();
+        file.read_to_string(&mut args.password)
+            .context("failed to read from password fd")?;
+        if args.password.ends_with('\n') {
+            args.password.pop();
+        }
+    }
+
+    if let Some(value) = argparse.opt_value_from_str("--cache-page-size")? {
         unsafe {
             FILE_CACHE_PAGE_SIZE = value;
         }
     }
-    if let Some(value) = args.opt_value_from_str("--cache-page-count")? {
+
+    if let Some(value) = argparse.opt_value_from_str("--cache-page-count")? {
         unsafe {
             FILE_CACHE_PAGE_COUNT = value;
         }
     }
-    while args.contains("--debug") {
+
+    while argparse.contains("--debug") {
         log_filter_level = Some(log::LevelFilter::Debug);
     }
-    if let Some(value) = args.opt_value_from_str("--log-level")? {
+
+    if let Some(value) = argparse.opt_value_from_str("--log-level")? {
         log_filter_level = Some(value);
     }
 
@@ -124,7 +149,9 @@ fn parse_args() -> Result<Args, Error> {
     }
     { env_logger }.init();
 
-    Ok(Args::from_vec(&arg0, args.finish()))
+    args.from_vec(argparse.finish())?;
+
+    Ok(args)
 }
 
 fn parse_manifest(manifest_path: &OsStr) -> Result<(), Error> {
@@ -140,7 +167,14 @@ fn parse_manifest(manifest_path: &OsStr) -> Result<(), Error> {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let args = parse_args()?;
+    let arg0 = std::env::args_os().next().unwrap();
+    let args = match parse_args() {
+        Ok(args) => args,
+        Err(err) => {
+            eprintln!("error: {err}");
+            usage(&arg0, std::io::stderr(), 1);
+        }
+    };
     parse_manifest(&args.manifest)?;
 
     let mut connector = SslConnector::builder(SslMethod::tls()).unwrap();

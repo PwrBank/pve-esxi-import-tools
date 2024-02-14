@@ -1,12 +1,17 @@
 use std::collections::HashMap;
 
-use anyhow::{bail, Context as _, Error};
+use anyhow::{bail, format_err, Context as _, Error};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use tokio::io::AsyncRead;
 
 static DISK_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"^((?:scsi|ide|sata|nvme)\d+:\d+)\.fileName$"#)
+        .expect("failed to create disk key regex")
+});
+
+static DISK_PROPERTY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"^((scsi|ide|sata|nvme)(\d+):(\d+))\.(\S+)$"#)
         .expect("failed to create disk key regex")
 });
 
