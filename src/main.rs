@@ -65,8 +65,6 @@ struct Args {
 
     // positional:
     host: String,
-    // user: String,
-    // password: String,
     manifest: OsString,
     mount_path: OsString,
 }
