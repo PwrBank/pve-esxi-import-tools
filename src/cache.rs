@@ -17,12 +17,8 @@ pub struct Cache {
     /// to their containing block here.
     block_mask: u64,
 
-    /// This is the number of blocks this cache can hold. Currently this is always equal to the
-    /// maximum defined by the CLI parameters.
-    block_count: usize,
-
     /// This maps an offset to the cached data.
-    entries: Mutex<BTreeMap<u64, Arc<Entry>>>,
+    entries: Mutex<LruMap>,
 
     /// This contains the currently active lookups, so we don't read the same block multiple times
     /// simultaneously.
@@ -43,8 +39,7 @@ impl Cache {
         Self {
             block_size,
             block_mask,
-            block_count,
-            entries: Mutex::new(BTreeMap::new()),
+            entries: Mutex::new(LruMap::new(block_count)),
             active_lookups: Mutex::new(BTreeMap::new()),
         }
     }
@@ -74,8 +69,8 @@ impl Cache {
         Fut: Future<Output = Result<Option<Bytes>, Error>> + Send + Sync,
     {
         {
-            let entries = self.entries.lock().unwrap();
-            if let Some(entry) = entries.get(&block_offset) {
+            let mut entries = self.entries.lock().unwrap();
+            if let Some(entry) = entries.get(block_offset) {
                 return Ok(Some(Arc::clone(entry)));
             }
         }
@@ -112,13 +107,6 @@ impl Cache {
         let mut entries = self.entries.lock().unwrap();
         let mut active_lookups = self.active_lookups.lock().unwrap();
         if let Some(entry) = &result {
-            while entries.len() + 1 > self.block_count {
-                // FIXME: We could use an LRU logic here, but we do expect this to be mostly
-                // sequential reads...
-                if let Some((offset, _)) = entries.pop_first() {
-                    log::debug!("dropped cache entry for block at offset {offset}");
-                }
-            }
             entries.insert(block_offset, Arc::clone(entry));
         }
         send.send(result.clone())?;
@@ -135,4 +123,58 @@ pub struct ReadResult {
 
 pub struct Entry {
     pub data: Bytes,
+}
+
+pub struct LruMap {
+    /// This is the number of blocks this cache can hold. Currently this is always equal to the
+    /// maximum defined by the CLI parameters.
+    block_count: usize,
+
+    /// This maps an offset to the cached data.
+    entries: BTreeMap<u64, Arc<Entry>>,
+
+    /// This keeps the LRU order of our blocks.
+    /// FIXME: this should be replaced with something with better performance...
+    order: Vec<u64>,
+}
+
+impl LruMap {
+    pub fn new(block_count: usize) -> Self {
+        Self {
+            block_count,
+            entries: BTreeMap::new(),
+            order: Vec::new(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    pub fn insert(&mut self, block_offset: u64, entry: Arc<Entry>) {
+        while self.len() + 1 > self.block_count {
+            if let Some(oldest) = self.order.pop() {
+                log::debug!("dropped cache entry for block at offset {oldest}");
+                self.entries.remove(&oldest);
+            } else {
+                // block_count of 1?
+                break;
+            }
+        }
+        self.order.insert(0, block_offset);
+        self.entries.insert(block_offset, entry);
+    }
+
+    pub fn get(&mut self, block_offset: u64) -> Option<&Arc<Entry>> {
+        let entry = self.entries.get(&block_offset)?;
+        match self.order.iter().position(|&o| o == block_offset) {
+            None => log::debug!("lru order does not contain the current entry"),
+            Some(position) => {
+                if position != 0 {
+                    self.order[..position].rotate_right(1);
+                }
+            }
+        }
+        Some(entry)
+    }
 }
