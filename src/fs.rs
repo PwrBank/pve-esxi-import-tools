@@ -5,7 +5,7 @@ use std::io::IoSlice;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Error};
+use anyhow::Error;
 use tokio::sync::watch;
 
 use proxmox_fuse::requests::{self, FuseRequest};
@@ -237,14 +237,6 @@ pub enum Inode {
 }
 
 impl Inode {
-    fn inode(&self) -> u64 {
-        match self {
-            Self::Datacenter(entry) => entry.inode,
-            Self::Dir(entry) => entry.inode,
-            Self::File(entry) => entry.inode,
-        }
-    }
-
     fn entry_param(&self) -> proxmox_fuse::EntryParam {
         match self {
             Self::Datacenter(dir) => proxmox_fuse::EntryParam {
@@ -356,20 +348,8 @@ impl Root {
         dc
     }
 
-    fn get_datacenter(&self, name: &str) -> Option<Arc<Datacenter>> {
-        let inode = self.handle_lookup(name)?;
-        match self.fs.inodes.lock().unwrap().get(&inode)? {
-            Inode::Datacenter(dc) => Some(Arc::clone(dc)),
-            _ => None,
-        }
-    }
-
     fn handle_lookup(&self, name: &str) -> Option<u64> {
         self.datacenters.lock().unwrap().get(name).copied()
-    }
-
-    fn forget(&self, forget: requests::Forget) {
-        forget.reply();
     }
 
     fn stat(&self) -> libc::stat {
@@ -437,7 +417,6 @@ impl Datacenter {
 
         let dir = Arc::new(Dir::new(
             Arc::clone(&self.fs),
-            self.inode,
             inode,
             self.datacenter.clone(),
             name.to_string(),
@@ -455,24 +434,12 @@ impl Datacenter {
         dir
     }
 
-    fn get_datastore(&self, name: &str) -> Option<Arc<Dir>> {
-        let inode = self.handle_lookup(name)?;
-        match self.fs.inodes.lock().unwrap().get(&inode)? {
-            Inode::Dir(dc) => Some(Arc::clone(dc)),
-            _ => None,
-        }
-    }
-
     fn stat(&self) -> libc::stat {
         dir_stat(self.inode)
     }
 
     fn handle_lookup(&self, name: &str) -> Option<u64> {
         self.datastores.lock().unwrap().get(name).copied()
-    }
-
-    fn forget(&self, forget: requests::Forget) {
-        forget.reply();
     }
 
     fn handle_readdir(&self, mut readdir: requests::ReaddirPlus) -> Result<(), Error> {
@@ -500,7 +467,6 @@ impl Datacenter {
 
 pub struct Dir {
     fs: Arc<FsBase>,
-    parent: u64,
     inode: u64,
     datacenter: String,
     datastore: String,
@@ -512,7 +478,6 @@ pub struct Dir {
 impl Dir {
     fn new(
         fs: Arc<FsBase>,
-        parent: u64,
         inode: u64,
         datacenter: String,
         datastore: String,
@@ -520,7 +485,6 @@ impl Dir {
     ) -> Self {
         Self {
             fs,
-            parent,
             inode,
             datacenter,
             datastore,
@@ -528,37 +492,6 @@ impl Dir {
             entries: Mutex::new(BTreeMap::new()),
             active_lookups: Mutex::new(BTreeMap::new()),
         }
-    }
-
-    pub fn create_directory(&self, name: &str) -> Result<Arc<Dir>, Error> {
-        let mut entries = self.entries.lock().unwrap();
-        if let Some(inode) = entries.get(name).copied() {
-            match self.fs.inodes.lock().unwrap().get(&inode).unwrap() {
-                Inode::Dir(dir) => return Ok(Arc::clone(&dir)),
-                _ => bail!("create_directory() called on an existing non-directory path"),
-            }
-        }
-
-        let inode = self.fs.create_inode();
-
-        let dir = Arc::new(Dir::new(
-            Arc::clone(&self.fs),
-            self.inode,
-            inode,
-            self.datacenter.clone(),
-            self.datastore.clone(),
-            format!("{}/{name}", self.path),
-        ));
-
-        self.fs
-            .inodes
-            .lock()
-            .unwrap()
-            .insert(inode, Inode::Dir(Arc::clone(&dir)));
-
-        entries.insert(name.to_string(), inode);
-
-        Ok(dir)
     }
 
     pub async fn lookup(&self, name: &str) -> Result<Option<Inode>, Error> {
@@ -611,21 +544,13 @@ impl Dir {
         {
             Ok(file) => {
                 let inode = self.fs.create_inode();
-                let file = Arc::new(File::new(
-                    Arc::clone(&self.fs),
-                    inode,
-                    self.datacenter.clone(),
-                    self.datastore.clone(),
-                    full_path,
-                    file,
-                ));
+                let file = Arc::new(File::new(inode, file));
                 (inode, Inode::File(file))
             }
             Err(err) if err.downcast_ref::<IsDirectory>().is_some() => {
                 let inode = self.fs.create_inode();
                 let dir = Arc::new(Dir::new(
                     Arc::clone(&self.fs),
-                    self.inode,
                     inode,
                     self.datacenter.clone(),
                     self.datastore.clone(),
@@ -697,32 +622,15 @@ impl Dir {
 }
 
 pub struct File {
-    fs: Arc<FsBase>,
     inode: u64,
-    datacenter: String,
-    datastore: String,
-    path: String,
     file: EsxiFile,
-    stat: libc::stat,
     cache: Cache,
 }
 
 impl File {
-    fn new(
-        fs: Arc<FsBase>,
-        inode: u64,
-        datacenter: String,
-        datastore: String,
-        path: String,
-        file: EsxiFile,
-    ) -> Self {
+    fn new(inode: u64, file: EsxiFile) -> Self {
         Self {
-            fs,
             inode,
-            datacenter,
-            datastore,
-            path,
-            stat: file_stat(inode, &file),
             file,
             cache: Cache::new(
                 crate::file_cache_page_size(),

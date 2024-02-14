@@ -67,44 +67,6 @@ impl EsxiClient {
         }
     }
 
-    /// Download a complete file.
-    pub async fn download_file(
-        &self,
-        datacenter: &str,
-        datastore: &str,
-        path: &str,
-    ) -> Result<Bytes, Error> {
-        self.download(datacenter, datastore, path, None).await
-    }
-
-    /// Download a range from a file.
-    pub async fn download_range(
-        &self,
-        datacenter: &str,
-        datastore: &str,
-        path: &str,
-        range: Range<u64>,
-    ) -> Result<Bytes, Error> {
-        self.download(datacenter, datastore, path, Some(range))
-            .await
-    }
-
-    fn datacenter_url(&self, datacenter: &str) -> String {
-        let datacenter = percent_encode(datacenter.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
-
-        format!("{}/?dcPath={datacenter}", self.folder_url)
-    }
-
-    fn datastore_url(&self, datacenter: &str, datastore: &str) -> String {
-        let datacenter = percent_encode(datacenter.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
-        let datastore = percent_encode(datastore.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
-
-        format!(
-            "{}/?dcPath={datacenter}&dsName={datastore}",
-            self.folder_url
-        )
-    }
-
     fn file_url(&self, datacenter: &str, datastore: &str, path: &str) -> String {
         let datacenter = percent_encode(datacenter.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
         let datastore = percent_encode(datastore.as_bytes(), &percent_encoding::NON_ALPHANUMERIC);
@@ -157,18 +119,6 @@ impl EsxiClient {
 
             return Ok(response);
         }
-    }
-
-    /// Download a range from a file.
-    pub async fn download(
-        &self,
-        datacenter: &str,
-        datastore: &str,
-        path: &str,
-        range: Option<Range<u64>>,
-    ) -> Result<Bytes, Error> {
-        self.download_do(&self.file_url(datacenter, datastore, path), range)
-            .await
     }
 
     async fn download_do(&self, query: &str, range: Option<Range<u64>>) -> Result<Bytes, Error> {
