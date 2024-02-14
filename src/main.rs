@@ -40,7 +40,7 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
     let _ = out.write_all(arg0.as_bytes());
     let _ = writeln!(
         out,
-        " [options] <url> <manifest-file> <mount-path>\n\
+        " [options] <host> <manifest-file> <mount-path>\n\
         options:\n  \
           --cache-page-size=BYTES     size of a per-file cache entry\n  \
           --cache-page-count=COUNT    number of cache entries per file\n  \
@@ -64,7 +64,7 @@ struct Args {
     mount_options: Vec<OsString>,
 
     // positional:
-    url: String,
+    host: String,
     // user: String,
     // password: String,
     manifest: OsString,
@@ -82,7 +82,7 @@ impl Args {
                 .map_err(|_| format_err!("non utf-8 parameter"))
         };
 
-        self.url = next()?;
+        self.host = next()?;
         self.manifest = args
             .next()
             .ok_or_else(|| format_err!("missing manifest path"))?;
@@ -196,7 +196,7 @@ async fn main() -> Result<(), Error> {
     let connector = connector.build();
 
     let client = Arc::new(EsxiClient::new(
-        &args.url,
+        &format!("https://{}", args.host),
         &args.user,
         &args.password,
         connector,
