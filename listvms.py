@@ -53,7 +53,14 @@ def get_all_datacenters(service_instance: vim.ServiceInstance) -> List[vim.Datac
 def main():
     esxi_host = sys.argv[1]
     esxi_user = sys.argv[2]
-    esxi_password = os.getenv('ESXI_PASSWORD', '...')
+    esxi_password_file = sys.argv[3]
+
+    esxi_password = ''
+    with open(esxi_password_file) as f:
+        esxi_password = f.read()
+        if esxi_password.endswith('\n'):
+            esxi_password = esxi_password[:-1]
+
     si = SmartConnectNoSSL(host=esxi_host, user=esxi_user, pwd=esxi_password)
 
     try:
