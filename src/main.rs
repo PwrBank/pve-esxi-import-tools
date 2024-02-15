@@ -170,14 +170,12 @@ fn parse_args() -> Result<Args, Error> {
         log_filter_level = Some(value);
     }
 
-    let mut env_logger = env_logger::builder();
-    env_logger
-        .filter_level(log::LevelFilter::Info)
-        .parse_env("PROXMOX_ESXI_FUSE_LOG");
-    if let Some(level) = log_filter_level {
-        env_logger.filter_level(level);
-    }
-    { env_logger }.init();
+    syslog::init(
+        syslog::Facility::LOG_DAEMON,
+        log_filter_level.unwrap_or(log::LevelFilter::Info),
+        Some("esxi-folder-fuse"),
+    )
+    .map_err(|err| format_err!("failed to initialize syslog: {err}"))?;
 
     args.parse_vec(argparse.finish())?;
 
