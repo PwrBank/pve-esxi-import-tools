@@ -22,11 +22,13 @@ DSC=rust-$(PACKAGE)_$(DEB_VERSION)_$(ARCH).dsc
 BINARY = $(COMPILEDIR)/esxi-folder-fuse
 SCRIPT = listvms.py
 
+CARGO := /usr/bin/cargo
+
 .PHONY: all
 all: $(BINARY)
 
 $(BINARY):
-	cargo build $(CARGO_BUILD_ARGS)
+	$(CARGO) build $(CARGO_BUILD_ARGS)
 
 .PHONY: check test
 check: test
@@ -44,6 +46,7 @@ build:
 	rm -rf build
 	mkdir build
 	mkdir build/rust-proxmox-esxi-import-$(DEB_VERSION)
+	echo system >build/rust-proxmox-esxi-import-$(DEB_VERSION)/rust-toolchain
 	cp -t build/rust-proxmox-esxi-import-$(DEB_VERSION) -a \
 	  debian \
 	  Makefile \
