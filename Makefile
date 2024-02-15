@@ -36,7 +36,9 @@ test:
 .PHONY: install
 install: $(BINARY) $(SCRIPT)
 	install -m755 -d $(DESTDIR)$(LIBEXECDIR)/proxmox-esxi-import
-	install -m755 -t $(DESTDIR)$(LIBEXECDIR)/proxmox-esxi-import $(BINARY) $(SCRIPT)
+	install -m755 -t $(DESTDIR)$(LIBEXECDIR)/proxmox-esxi-import $(BINARY)
+	install -m755 -d $(DESTDIR)$(LIBDIR)/proxmox-esxi-import
+	install -m755 -t $(DESTDIR)$(LIBDIR)/proxmox-esxi-import $(SCRIPT)
 
 build:
 	rm -rf build
