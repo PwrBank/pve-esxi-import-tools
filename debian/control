@@ -29,8 +29,6 @@ Build-Depends: cargo:native (>= 0.65.0~),
                librust-tokio-1+rt-multi-thread-dev,
                librust-tokio-1+time-dev,
                libstd-rust-dev,
-               python3,
-               python3-pyvmomi,
                rustc:native,
 Maintainer: Proxmox Support Team <support@proxmox.com>
 Standards-Version: 4.6.2
@@ -39,7 +37,9 @@ Rules-Requires-Root: no
 
 Package: proxmox-esxi-import
 Architecture: any
-Depends: ${misc:Depends},
+Depends: python3,
+         python3-pyvmomi,
+         ${misc:Depends},
          ${shlibs:Depends},
 Description: Tools to allow importing VMs from ESXi hosts
  Provides a FUSE file system to access files on ESXi hosts and a python utility
