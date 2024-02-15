@@ -63,7 +63,11 @@ def main():
         if esxi_password.endswith('\n'):
             esxi_password = esxi_password[:-1]
 
-    si = SmartConnectNoSSL(host=esxi_host, user=esxi_user, pwd=esxi_password)
+    try:
+        si = SmartConnectNoSSL(host=esxi_host, user=esxi_user, pwd=esxi_password)
+    except OSError as err:
+        print(f"failed to connect: {err}")
+        sys.exit(1)
 
     try:
         datacenters = get_all_datacenters(si)
@@ -84,7 +88,6 @@ def main():
         print(json.dumps(data, indent=2))
     finally:
         Disconnect(si)
-
 
 if __name__ == "__main__":
     main()
