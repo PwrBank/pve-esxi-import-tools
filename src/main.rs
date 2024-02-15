@@ -1,5 +1,6 @@
 use std::ffi::{CString, OsStr, OsString};
 use std::io;
+use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -53,7 +54,8 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
           --user-file=PATH            read both user name and password from a file\n  \
           -o MOUNT_OPTIONS            pass a mount option to fuse, such as allow_other\n  \
           --change-user=UID           change to the provided user after mounting\n  \
-          --change-group=UID          change to the provided group after mounting\n\
+          --change-group=UID          change to the provided group after mounting\n  \
+          --ready-fd=FDNUM            close file descriptor FDNUM when ready\n\
         "
     );
 
@@ -68,6 +70,7 @@ struct Args {
     mount_options: Vec<OsString>,
     change_user: Option<String>,
     change_group: Option<String>,
+    ready_fd: Option<RawFd>,
 
     // positional:
     host: String,
@@ -154,6 +157,9 @@ fn parse_args() -> Result<Args, Error> {
     }
     if let Some(value) = argparse.opt_value_from_str("--change-group")? {
         args.change_group = Some(value);
+    }
+    if let Some(value) = argparse.opt_value_from_str("--ready-fd")? {
+        args.ready_fd = Some(value);
     }
 
     while argparse.contains("--debug") {
@@ -288,6 +294,14 @@ async fn main() -> Result<(), Error> {
                     );
                 }
             }
+        }
+    }
+
+    if let Some(fd) = args.ready_fd {
+        let rc = unsafe { libc::close(fd) };
+        if rc != 0 {
+            let err = io::Error::last_os_error();
+            log::error!("error closing ready-fd: {err:?}");
         }
     }
 
