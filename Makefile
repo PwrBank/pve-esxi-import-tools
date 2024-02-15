@@ -23,6 +23,7 @@ BINARY = $(COMPILEDIR)/esxi-folder-fuse
 SCRIPT = listvms.py
 
 CARGO := /usr/bin/cargo
+RUSTC := /usr/bin/rustc
 
 .PHONY: all
 all: $(BINARY)
@@ -33,7 +34,7 @@ $(BINARY):
 .PHONY: check test
 check: test
 test:
-	cargo test $(CARGO_BUILD_ARGS)
+	$(CARGO) test $(CARGO_BUILD_ARGS)
 
 .PHONY: install
 install: $(BINARY) $(SCRIPT)
@@ -60,7 +61,7 @@ deb:
 	$(MAKE) build/$(DEB)
 build/$(DEB): build
 	(cd build/rust-proxmox-esxi-import-$(DEB_VERSION) && \
-	  CARGO=/usr/bin/cargo RUSTC=/usr/bin/rustc dpkg-buildpackage -b -uc -us)
+	  CARGO=$(CARGO) RUSTC=$(RUSTC) dpkg-buildpackage -b -uc -us)
 	lintian build/*.deb
 
 .PHONY: dsc
@@ -69,10 +70,10 @@ dsc:
 	$(MAKE) build/$(DSC)
 build/$(DSC): build
 	(cd build/rust-proxmox-esxi-import-$(DEB_VERSION) && \
-	  CARGO=/usr/bin/cargo RUSTC=/usr/bin/rustc dpkg-buildpackage -S -uc -us)
+	  CARGO=$(CARGO) RUSTC=$(RUSTC) dpkg-buildpackage -S -uc -us)
 	lintian build/*.dsc
 
 .PHONY: clean
 clean:
 	rm -rf build
-	cargo clean
+	$(CARGO) clean
