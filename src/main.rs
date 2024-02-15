@@ -1,10 +1,12 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::{CString, OsStr, OsString};
+use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{bail, format_err, Context as _, Error};
 use futures::stream::StreamExt;
+use nix::unistd;
 use openssl::ssl::{SslConnector, SslMethod};
 
 use proxmox_fuse::Fuse;
@@ -38,7 +40,7 @@ pub fn manifest() -> &'static manifest::Manifest {
 fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
     let _ = out.write_all(b"usage: ");
     let _ = out.write_all(arg0.as_bytes());
-    let _ = writeln!(
+    let _ = write!(
         out,
         " [options] <host> <manifest-file> <mount-path>\n\
         options:\n  \
@@ -49,7 +51,9 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
           --password-file=FILEM       read password from a file\n  \
           --password-fd=FDNUM         read password from a file descriptor\n  \
           --user-file=PATH            read both user name and password from a file\n  \
-          -o MOUNT_OPTIONS            pass a mount option to fuse, such as allow_other\n\
+          -o MOUNT_OPTIONS            pass a mount option to fuse, such as allow_other\n  \
+          --change-user=UID           change to the provided user after mounting\n  \
+          --change-group=UID          change to the provided group after mounting\n\
         "
     );
 
@@ -62,6 +66,8 @@ struct Args {
     user: String,
     password: String,
     mount_options: Vec<OsString>,
+    change_user: Option<String>,
+    change_group: Option<String>,
 
     // positional:
     host: String,
@@ -143,6 +149,12 @@ fn parse_args() -> Result<Args, Error> {
             FILE_CACHE_PAGE_COUNT = value;
         }
     }
+    if let Some(value) = argparse.opt_value_from_str("--change-user")? {
+        args.change_user = Some(value);
+    }
+    if let Some(value) = argparse.opt_value_from_str("--change-group")? {
+        args.change_group = Some(value);
+    }
 
     while argparse.contains("--debug") {
         log_filter_level = Some(log::LevelFilter::Debug);
@@ -188,6 +200,44 @@ async fn main() -> Result<(), Error> {
         }
     };
     parse_manifest(&args.manifest)?;
+
+    let change_uid = match args.change_user.as_deref() {
+        Some(user) => Some(get_uid(user)?),
+        None => None,
+    };
+
+    let change_gid = match args.change_group.as_deref() {
+        Some(group) => Some(get_gid(group)?),
+        None => None,
+    };
+
+    let mut fuse = Fuse::builder("esxi-folder-fuse")
+        .context("failed to create fuse session builder")?
+        .enable_open()
+        .enable_read()
+        .enable_readdirplus();
+
+    for opt in args.mount_options {
+        fuse = fuse.options_os(&opt)?;
+    }
+
+    unmount_if_mounted(&args.mount_path)?;
+
+    let mut fuse = fuse
+        .build()
+        .context("failed to create fuse session")?
+        .mount(Path::new(&args.mount_path))
+        .with_context(|| format!("failed to mount fuse file system at {:?}", args.mount_path))?;
+
+    // Note: we could connect first, but we want to get the privilege-dropping out of the way
+    // before connecting to the outside.
+
+    if let Some(gid) = change_gid {
+        unistd::setgid(unistd::Gid::from_raw(gid)).context("failed to change group id")?;
+    }
+    if let Some(uid) = change_uid {
+        unistd::setuid(unistd::Uid::from_raw(uid)).context("failed to change user id")?;
+    }
 
     let mut connector = SslConnector::builder(SslMethod::tls()).unwrap();
     connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
@@ -241,7 +291,11 @@ async fn main() -> Result<(), Error> {
         }
     }
 
-    run_fuse(args.mount_path, fs, args.mount_options).await?;
+    while let Some(request) = fuse.next().await {
+        let request = request.context("error fetching next fuse request")?;
+        let fs = Arc::clone(&fs);
+        tokio::spawn(async move { fs.handle_request(request).await });
+    }
 
     Ok(())
 }
@@ -277,32 +331,38 @@ async fn check_file_exists(datastore: &Arc<fs::Dir>, path: &str) -> Result<bool,
     Ok(true)
 }
 
-async fn run_fuse(
-    path: OsString,
-    fs: Arc<fs::Fs>,
-    mount_options: Vec<OsString>,
-) -> Result<(), Error> {
-    let mut fuse = Fuse::builder("esxi-folder-fuse")
-        .context("failed to create fuse session builder")?
-        .enable_open()
-        .enable_read()
-        .enable_readdirplus();
-
-    for opt in mount_options {
-        fuse = fuse.options_os(&opt)?;
+fn unmount_if_mounted(path: &OsStr) -> Result<(), Error> {
+    let path = CString::new(path.as_bytes()).context("failed to build C string")?;
+    let rc = unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) };
+    if rc < 0 {
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::EINVAL) {
+            return Err(Error::from(err).context("failed to unmount old fuse instance"));
+        }
     }
-
-    let mut fuse = fuse
-        .build()
-        .context("failed to create fuse session")?
-        .mount(Path::new(&path))
-        .with_context(|| format!("failed to mount fuse file system at {path:?}"))?;
-
-    while let Some(request) = fuse.next().await {
-        let request = request.context("error fetching next fuse request")?;
-        let fs = Arc::clone(&fs);
-        tokio::spawn(async move { fs.handle_request(request).await });
-    }
-
     Ok(())
+}
+
+fn get_uid(name_or_uid: &str) -> Result<libc::uid_t, Error> {
+    if let Ok(num) = name_or_uid.parse() {
+        return Ok(num);
+    }
+
+    Ok(unistd::User::from_name(name_or_uid)
+        .context("failed to query system user id for '{name_or_uid}'")?
+        .ok_or_else(|| format_err!("no such user '{name_or_uid}'"))?
+        .uid
+        .as_raw())
+}
+
+fn get_gid(name_or_gid: &str) -> Result<libc::gid_t, Error> {
+    if let Ok(num) = name_or_gid.parse() {
+        return Ok(num);
+    }
+
+    Ok(unistd::Group::from_name(name_or_gid)
+        .context("failed to query system group id for '{name_or_gid}'")?
+        .ok_or_else(|| format_err!("no such group '{name_or_gid}'"))?
+        .gid
+        .as_raw())
 }
