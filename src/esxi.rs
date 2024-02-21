@@ -4,8 +4,9 @@ use std::future::Future;
 use std::io;
 use std::ops::Range;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 
 use anyhow::{bail, format_err, Context as _, Error};
 use http::{Request, Response};
@@ -28,6 +29,17 @@ impl fmt::Display for NotFound {
 }
 
 impl StdError for NotFound {}
+
+#[derive(Clone, Copy, Debug)]
+pub struct EofReached;
+
+impl fmt::Display for EofReached {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("file not found")
+    }
+}
+
+impl StdError for EofReached {}
 
 #[derive(Clone, Copy, Debug)]
 pub struct IsDirectory;
@@ -113,6 +125,10 @@ impl EsxiClient {
                 return Err(NotFound.into());
             }
 
+            if status.as_u16() == 416 {
+                return Err(EofReached.into());
+            }
+
             if !status.is_success() {
                 bail!("http error code {status:?}");
             }
@@ -121,7 +137,12 @@ impl EsxiClient {
         }
     }
 
-    async fn download_do(&self, query: &str, range: Option<Range<u64>>) -> Result<Bytes, Error> {
+    /// This returns the body and, if provided, the file's size.
+    async fn download_do(
+        &self,
+        query: &str,
+        range: Option<Range<u64>>,
+    ) -> Result<(Bytes, Option<u64>), Error> {
         let (parts, body) = self
             .make_request(|| {
                 let mut req = Request::get(query);
@@ -147,9 +168,20 @@ impl EsxiClient {
             bail!("unexpected content type: {content_type:?}");
         }
 
+        let file_size = parts
+            .headers
+            .get("content-range")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("bytes "))
+            .and_then(|value| match value.rfind('/') {
+                Some(slash) => Some(&value[(slash + 1)..]),
+                None => None,
+            })
+            .and_then(|value| value.parse().ok());
+
         let body = hyper::body::to_bytes(body).await?;
 
-        Ok(body)
+        Ok((body, file_size))
     }
 
     /// Get the size of a file.
@@ -197,7 +229,7 @@ impl EsxiClient {
         Ok(EsxiFile {
             client: Arc::clone(self),
             query: query.into(),
-            size,
+            size: AtomicU64::new(size),
             at: 0,
             state: ReadState::New,
         })
@@ -207,7 +239,7 @@ impl EsxiClient {
 enum ReadState {
     New,
     Have { data: Bytes, at: usize },
-    Reading(JoinHandle<Result<Bytes, Error>>),
+    Reading(JoinHandle<Result<(Bytes, Option<u64>), Error>>),
     Eof,
 }
 
@@ -216,7 +248,7 @@ enum ReadState {
 pub struct EsxiFile {
     client: Arc<EsxiClient>,
     query: Arc<str>,
-    size: u64,
+    size: AtomicU64,
     at: u64,
     state: ReadState,
 }
@@ -225,12 +257,16 @@ impl EsxiFile {
     /// Get the file size. This is cached from the `HEAD` request made at `open_file` time, so if
     /// the file size changes in between, this is not updated.
     pub fn size(&self) -> u64 {
-        self.size
+        self.size.load(Ordering::Acquire)
     }
 
     /// Read an arbitrary range of data from the file.
     pub async fn read_at(&self, range: Range<u64>) -> Result<Bytes, Error> {
-        self.client.download_do(&self.query, Some(range)).await
+        let (body, size) = self.client.download_do(&self.query, Some(range)).await?;
+        if let Some(new_size) = size {
+            self.size.store(new_size, Ordering::Release);
+        }
+        Ok(body)
     }
 }
 
@@ -258,34 +294,34 @@ impl AsyncRead for EsxiFile {
                     // otherwise fall through to the read code
                 }
                 ReadState::Reading(fut) => {
-                    let data = match Pin::new(fut).poll(cx) {
-                        Poll::Pending => return Poll::Pending,
-                        Poll::Ready(result) => match result {
-                            Ok(Ok(bytes)) => bytes,
-                            Ok(Err(err)) => {
-                                return Poll::Ready(Err(io::Error::new(
-                                    io::ErrorKind::Other,
-                                    err.to_string(),
-                                )));
-                            }
-                            Err(err) => {
-                                return Poll::Ready(Err(io::Error::new(
-                                    io::ErrorKind::Other,
-                                    err.to_string(),
-                                )));
-                            }
-                        },
+                    let (data, new_size) = match ready!(Pin::new(fut).poll(cx)) {
+                        Ok(Ok(result)) => result,
+                        Ok(Err(err)) if err.is::<EofReached>() => {
+                            this.state = ReadState::Eof;
+                            return Poll::Ready(Ok(()));
+                        }
+                        Ok(Err(err)) => {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::Other,
+                                err.to_string(),
+                            )));
+                        }
+                        Err(err) => {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::Other,
+                                err.to_string(),
+                            )));
+                        }
                     };
 
-                    this.at = this.at.saturating_add(data.len() as u64).min(this.size);
+                    if let Some(new_size) = new_size {
+                        this.size.store(new_size, Ordering::Release);
+                    };
+
+                    this.at = this.at.saturating_add(data.len() as u64);
                     this.state = ReadState::Have { data, at: 0 };
                     continue;
                 }
-            }
-
-            if this.at == this.size {
-                this.state = ReadState::Eof;
-                return Poll::Ready(Ok(()));
             }
 
             let client = Arc::clone(&this.client);
