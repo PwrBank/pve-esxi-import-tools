@@ -295,15 +295,20 @@ impl Inode {
         }
     }
 
-    fn handle_open(&self, mut open: requests::Open) -> Result<(), Error> {
-        if matches!(self, Self::File(_)) {
-            open.file_info.set_direct_io(true);
+    fn handle_open(&self, open: requests::Open) -> Result<(), Error> {
+        match self {
+            Self::Datacenter(entry) => entry.handle_open(open),
+            Self::Dir(entry) => entry.handle_open(open),
+            Self::File(entry) => entry.handle_open(open),
         }
-        Ok(open.reply(0)?)
     }
 
     fn handle_release(&self, release: requests::Release) -> Result<(), Error> {
-        Ok(release.reply()?)
+        match self {
+            Self::Datacenter(entry) => entry.handle_release(release),
+            Self::Dir(entry) => entry.handle_release(release),
+            Self::File(entry) => entry.handle_release(release),
+        }
     }
 }
 
@@ -463,6 +468,14 @@ impl Datacenter {
 
         Ok(readdir.reply()?)
     }
+
+    fn handle_open(&self, open: requests::Open) -> Result<(), Error> {
+        Ok(open.reply(0)?)
+    }
+
+    fn handle_release(&self, release: requests::Release) -> Result<(), Error> {
+        Ok(release.reply()?)
+    }
 }
 
 pub struct Dir {
@@ -619,6 +632,14 @@ impl Dir {
 
         Ok(readdir.reply()?)
     }
+
+    fn handle_open(&self, open: requests::Open) -> Result<(), Error> {
+        Ok(open.reply(0)?)
+    }
+
+    fn handle_release(&self, release: requests::Release) -> Result<(), Error> {
+        Ok(release.reply()?)
+    }
 }
 
 pub struct File {
@@ -700,5 +721,16 @@ impl File {
             read.reply_vectored(&response)?;
         }
         Ok(())
+    }
+
+    fn handle_open(&self, mut open: requests::Open) -> Result<(), Error> {
+        self.cache.enable();
+        open.file_info.set_direct_io(true);
+        Ok(open.reply(0)?)
+    }
+
+    fn handle_release(&self, release: requests::Release) -> Result<(), Error> {
+        self.cache.disable();
+        Ok(release.reply()?)
     }
 }

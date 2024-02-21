@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Error;
@@ -23,6 +24,10 @@ pub struct Cache {
     /// This contains the currently active lookups, so we don't read the same block multiple times
     /// simultaneously.
     active_lookups: Mutex<BTreeMap<u64, watch::Receiver<Option<Arc<Entry>>>>>,
+
+    /// Disabled while the kernel doesn't have any "open" handle to the file, that is an `Open`
+    /// fuse request enables the cache, and a `Release` request clears and disables it.
+    enabled: AtomicBool,
 }
 
 impl Cache {
@@ -41,7 +46,21 @@ impl Cache {
             block_mask,
             entries: Mutex::new(LruMap::new(block_count)),
             active_lookups: Mutex::new(BTreeMap::new()),
+            enabled: AtomicBool::new(true),
         }
+    }
+
+    pub fn disable(&self) {
+        let mut entries = self.entries.lock().unwrap();
+        // The store can be relaxed since we're holding the entries mutex for both reading and
+        // writing it which already does a Release when clearing the lock.
+        self.enabled.store(false, Ordering::Relaxed);
+        self.active_lookups.lock().unwrap().clear();
+        entries.clear();
+    }
+
+    pub fn enable(&self) {
+        self.enabled.store(true, Ordering::Release);
     }
 
     pub async fn lookup<Fut, F>(&self, offset: u64, fill: F) -> Result<Option<ReadResult>, Error>
@@ -107,7 +126,11 @@ impl Cache {
         let mut entries = self.entries.lock().unwrap();
         let mut active_lookups = self.active_lookups.lock().unwrap();
         if let Some(entry) = &result {
-            entries.insert(block_offset, Arc::clone(entry));
+            // The load can be relaxed since we always hold the entries mutex accessing this and it
+            // does an Acquire already.
+            if self.enabled.load(Ordering::Relaxed) {
+                entries.insert(block_offset, Arc::clone(entry));
+            }
         }
         send.send(result.clone())?;
         active_lookups.remove(&block_offset);
@@ -149,6 +172,11 @@ impl LruMap {
 
     pub fn len(&self) -> usize {
         self.order.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
     }
 
     pub fn insert(&mut self, block_offset: u64, entry: Arc<Entry>) {
