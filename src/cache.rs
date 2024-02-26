@@ -199,7 +199,7 @@ impl LruMap {
             None => log::debug!("lru order does not contain the current entry"),
             Some(position) => {
                 if position != 0 {
-                    self.order[..position].rotate_right(1);
+                    self.order[..=position].rotate_right(1);
                 }
             }
         }
