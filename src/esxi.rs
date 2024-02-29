@@ -262,7 +262,11 @@ impl EsxiFile {
 
     /// Read an arbitrary range of data from the file.
     pub async fn read_at(&self, range: Range<u64>) -> Result<Bytes, Error> {
-        let (body, size) = self.client.download_do(&self.query, Some(range)).await?;
+        let (body, size) = match self.client.download_do(&self.query, Some(range)).await {
+            Ok(res) => res,
+            Err(err) if err.is::<EofReached>() => return Ok(Bytes::new()),
+            Err(err) => return Err(err),
+        };
         if let Some(new_size) = size {
             self.size.store(new_size, Ordering::Release);
         }

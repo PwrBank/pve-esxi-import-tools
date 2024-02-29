@@ -671,17 +671,8 @@ impl File {
         let mut response = Vec::new();
 
         let mut offset = read.offset;
-        if offset >= self.file.size() {
-            read.reply(&[])?;
-            return Ok(());
-        }
 
-        let end = offset + read.size as u64;
-        let end = end.min(self.file.size());
-        if end <= offset {
-            read.reply(&[])?;
-            return Ok(());
-        }
+        let end = offset.saturating_add(read.size as u64);
         let mut size = (end - offset) as usize;
 
         while size != 0 {
@@ -700,6 +691,9 @@ impl File {
                     let bytes: &[u8] = read_result.entry.data.as_ref();
                     let bytes = &bytes[in_block..];
                     let len = size.min(bytes.len());
+                    if len == 0 {
+                        break;
+                    }
 
                     if response.is_empty() && size <= len {
                         read.reply(&bytes[..len])?;

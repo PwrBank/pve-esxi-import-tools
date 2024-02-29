@@ -348,8 +348,10 @@ fn unmount_if_mounted(path: &OsStr) -> Result<(), Error> {
     let rc = unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) };
     if rc < 0 {
         let err = io::Error::last_os_error();
-        if err.raw_os_error() != Some(libc::EINVAL) {
-            return Err(Error::from(err).context("failed to unmount old fuse instance"));
+        if let Some(errno) = err.raw_os_error() {
+            if errno != libc::EINVAL && errno != libc::ENOENT {
+                return Err(Error::from(err).context("failed to unmount old fuse instance"));
+            }
         }
     }
     Ok(())
