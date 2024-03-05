@@ -1,4 +1,4 @@
-rust-proxmox-esxi-import (0.0.1) bookworm; urgency=medium
+rust-pve-esxi-import-tools (0.0.1) bookworm; urgency=medium
 
   * initial build
 
