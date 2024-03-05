@@ -77,3 +77,12 @@ build/$(DSC): build
 clean:
 	rm -rf build
 	$(CARGO) clean
+
+.PHONY: upload
+upload: UPLOAD_DIST ?= $(DEB_DISTRIBUTION)
+upload: build/$(DEB)
+	cd build; \
+	    dcmd --deb rust-pve-esxi-import-tools_*.changes \
+	    | grep -v '.changes$$' \
+	    | tar -cf- -T- \
+	    | ssh -X repoman@repo.proxmox.com upload --product pve --dist $(UPLOAD_DIST)
