@@ -17,7 +17,7 @@ COMPILEDIR := target/debug
 endif
 
 DEB=$(PACKAGE)_$(DEB_VERSION)_$(ARCH).deb
-DSC=rust-$(PACKAGE)_$(DEB_VERSION)_$(ARCH).dsc
+DSC=$(PACKAGE)_$(DEB_VERSION).dsc
 
 BINARY = $(COMPILEDIR)/esxi-folder-fuse
 SCRIPT = listvms.py
