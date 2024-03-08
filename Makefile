@@ -20,6 +20,7 @@ COMPILEDIR := target/debug
 endif
 
 DEB=$(PACKAGE)_$(DEB_VERSION)_$(ARCH).deb
+DEB_DBGSYM=$(PACKAGE)-dbgsym_$(DEB_VERSION)_$(ARCH).deb
 DSC=$(PACKAGE)_$(DEB_VERSION).dsc
 
 BINARY = $(COMPILEDIR)/esxi-folder-fuse
@@ -66,6 +67,7 @@ deb:
 	rm -rf $(OUTPUT_DIR)
 	$(MAKE) $(OUTPUT_DIR)/$(DEB)
 
+$(OUTPUT_DIR)/$(DEB_DBGSYM): $(OUTPUT_DIR)/$(DEB)
 $(OUTPUT_DIR)/$(DEB): $(BUILD_DIR)
 	cd $(BUILD_DIR) && CARGO=$(CARGO) RUSTC=$(RUSTC) dpkg-buildpackage -b -uc -us
 	lintian $@
