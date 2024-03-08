@@ -1,3 +1,9 @@
+pve-esxi-import-tools (0.1.0) bookworm; urgency=medium
+
+  * initial release to our staging repos for testing
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 08 Mar 2024 13:37:24 +0100
+
 rust-pve-esxi-import-tools (0.0.1) bookworm; urgency=medium
 
   * initial build
