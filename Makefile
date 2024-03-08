@@ -9,6 +9,9 @@ DATAROOTDIR = $(PREFIX)/share
 PACKAGE := pve-esxi-import-tools
 ARCH := $(DEB_BUILD_ARCH)
 
+OUTPUT_DIR := build
+BUILD_DIR := $(OUTPUT_DIR)/$(PACKAGE)-$(DEB_VERSION)
+
 ifeq ($(BUILD_MODE), release)
 CARGO_BUILD_ARGS += --release
 COMPILEDIR := target/release
@@ -43,35 +46,39 @@ install: $(BINARY) $(SCRIPT)
 	install -m755 -d $(DESTDIR)$(LIBDIR)/pve-esxi-import-tools
 	install -m755 -t $(DESTDIR)$(LIBDIR)/pve-esxi-import-tools $(SCRIPT)
 
-build:
-	rm -rf build
-	mkdir build
-	mkdir build/rust-pve-esxi-import-tools-$(DEB_VERSION)
-	echo system >build/rust-pve-esxi-import-tools-$(DEB_VERSION)/rust-toolchain
-	cp -t build/rust-pve-esxi-import-tools-$(DEB_VERSION) -a \
+build-dir:
+
+$(BUILD_DIR):
+	rm -rf $@ $@.tmp
+	mkdir -p $@.tmp
+	echo system >$@.tmp/rust-toolchain
+	cp -t $@.tmp -a \
 	  debian \
 	  Makefile \
 	  listvms.py \
-	  Cargo.toml src
-	rm -f build/Cargo.lock
+	  Cargo.toml \
+	  src
+	rm -f $@.tmp/Cargo.lock
+	mv $@.tmp $@
 
 .PHONY: deb
 deb:
-	rm -rf build
-	$(MAKE) build/$(DEB)
-build/$(DEB): build
-	(cd build/rust-pve-esxi-import-tools-$(DEB_VERSION) && \
-	  CARGO=$(CARGO) RUSTC=$(RUSTC) dpkg-buildpackage -b -uc -us)
-	lintian build/*.deb
+	rm -rf $(OUTPUT_DIR)
+	$(MAKE) $(OUTPUT_DIR)/$(DEB)
+
+$(OUTPUT_DIR)/$(DEB): $(BUILD_DIR)
+	cd $(BUILD_DIR) && CARGO=$(CARGO) RUSTC=$(RUSTC) dpkg-buildpackage -b -uc -us
+	lintian $@
 
 .PHONY: dsc
 dsc:
-	rm -rf build
-	$(MAKE) build/$(DSC)
-build/$(DSC): build
-	(cd build/rust-pve-esxi-import-tools-$(DEB_VERSION) && \
-	  CARGO=$(CARGO) RUSTC=$(RUSTC) dpkg-buildpackage -S -uc -us)
-	lintian build/*.dsc
+	rm -rf $(OUTPUT_DIR)
+	$(MAKE) $(OUTPUT_DIR)/$(DSC)
+	lintian $(OUTPUT_DIR)/$(DSC)
+
+$(OUTPUT_DIR)/$(DSC): $(BUILD_DIR)
+	cd $(BUILD_DIR) && CARGO=$(CARGO) RUSTC=$(RUSTC) dpkg-buildpackage -S -uc -us
+
 
 .PHONY: clean
 clean:
