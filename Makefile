@@ -91,9 +91,5 @@ clean:
 
 .PHONY: upload
 upload: UPLOAD_DIST ?= $(DEB_DISTRIBUTION)
-upload: build/$(DEB)
-	cd build; \
-	    dcmd --deb rust-pve-esxi-import-tools_*.changes \
-	    | grep -v '.changes$$' \
-	    | tar -cf- -T- \
-	    | ssh -X repoman@repo.proxmox.com upload --product pve --dist $(UPLOAD_DIST)
+upload: $(OUTPUT_DIR)/$(DEB) $(OUTPUT_DIR)/$(DEB_DBGSYM)
+	cd $(OUTPUT_DIR); tar cf - $(DEB) $(DEB_DBGSYM) | ssh -X repoman@repo.proxmox.com upload --product pve --dist $(UPLOAD_DIST)
