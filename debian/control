@@ -1,4 +1,4 @@
-Source: rust-pve-esxi-import-tools
+Source: pve-esxi-import-tools
 Section: admin
 Priority: optional
 Build-Depends: cargo:native (>= 0.65.0~),
