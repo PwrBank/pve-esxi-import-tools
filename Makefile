@@ -81,6 +81,8 @@ dsc:
 $(OUTPUT_DIR)/$(DSC): $(BUILD_DIR)
 	cd $(BUILD_DIR) && CARGO=$(CARGO) RUSTC=$(RUSTC) dpkg-buildpackage -S -uc -us
 
+sbuild: $(OUTPUT_DIR)/$(DSC)
+	cd $(OUTPUT_DIR) && sbuild $(DSC)
 
 .PHONY: clean
 clean:
