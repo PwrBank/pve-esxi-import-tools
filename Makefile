@@ -27,8 +27,7 @@ DSC=$(PACKAGE)_$(DEB_VERSION).dsc
 BINARY = $(COMPILEDIR)/esxi-folder-fuse
 SCRIPT = listvms.py
 
-CARGO := /usr/bin/cargo
-RUSTC := /usr/bin/rustc
+CARGO ?= cargo
 
 .PHONY: all
 all: $(BINARY)
@@ -69,7 +68,7 @@ deb:
 
 $(OUTPUT_DIR)$(DEB_DBGSYM): $(OUTPUT_DIR)$(DEB)
 $(OUTPUT_DIR)$(DEB): $(BUILD_DIR)
-	cd $(BUILD_DIR) && CARGO=$(CARGO) RUSTC=$(RUSTC) dpkg-buildpackage -b -uc -us
+	cd $(BUILD_DIR) && dpkg-buildpackage -b -uc -us
 	lintian $@
 
 .PHONY: dsc
@@ -79,7 +78,7 @@ dsc:
 	lintian $(OUTPUT_DIR)$(DSC)
 
 $(OUTPUT_DIR)$(DSC): $(BUILD_DIR)
-	cd $(BUILD_DIR) && CARGO=$(CARGO) RUSTC=$(RUSTC) dpkg-buildpackage -S -uc -us
+	cd $(BUILD_DIR) && dpkg-buildpackage -S -uc -us
 
 sbuild: $(OUTPUT_DIR)$(DSC)
 	[ -z "$(OUTPUT_DIR)" ] || cd $(OUTPUT_DIR); sbuild $(DSC)
