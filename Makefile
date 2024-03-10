@@ -8,8 +8,10 @@ DATAROOTDIR = $(PREFIX)/share
 PACKAGE := pve-esxi-import-tools
 ARCH := $(DEB_BUILD_ARCH)
 
-OUTPUT_DIR := build
-BUILD_DIR := $(OUTPUT_DIR)/$(PACKAGE)-$(DEB_VERSION)
+# build in separate directory but output resulting package artefacts top-level by default
+# allow to override by passing OUTPUT_DIR explicitly, e.g.: make OUTPUT_DIR=build/ deb
+OUTPUT_DIR :=
+BUILD_DIR := $(OUTPUT_DIR)$(PACKAGE)-$(DEB_VERSION)
 
 ifeq ($(BUILD_MODE), release)
 CARGO_BUILD_ARGS += --release
@@ -62,32 +64,35 @@ $(BUILD_DIR):
 
 .PHONY: deb
 deb:
-	rm -rf $(OUTPUT_DIR)
-	$(MAKE) $(OUTPUT_DIR)/$(DEB)
+	rm -rf $(BUILD_DIR)
+	$(MAKE) $(OUTPUT_DIR)$(DEB)
 
-$(OUTPUT_DIR)/$(DEB_DBGSYM): $(OUTPUT_DIR)/$(DEB)
-$(OUTPUT_DIR)/$(DEB): $(BUILD_DIR)
+$(OUTPUT_DIR)$(DEB_DBGSYM): $(OUTPUT_DIR)$(DEB)
+$(OUTPUT_DIR)$(DEB): $(BUILD_DIR)
 	cd $(BUILD_DIR) && CARGO=$(CARGO) RUSTC=$(RUSTC) dpkg-buildpackage -b -uc -us
 	lintian $@
 
 .PHONY: dsc
 dsc:
-	rm -rf $(OUTPUT_DIR)
-	$(MAKE) $(OUTPUT_DIR)/$(DSC)
-	lintian $(OUTPUT_DIR)/$(DSC)
+	rm -rf $(BUILD_DIR)
+	$(MAKE) $(OUTPUT_DIR)$(DSC)
+	lintian $(OUTPUT_DIR)$(DSC)
 
-$(OUTPUT_DIR)/$(DSC): $(BUILD_DIR)
+$(OUTPUT_DIR)$(DSC): $(BUILD_DIR)
 	cd $(BUILD_DIR) && CARGO=$(CARGO) RUSTC=$(RUSTC) dpkg-buildpackage -S -uc -us
 
-sbuild: $(OUTPUT_DIR)/$(DSC)
-	cd $(OUTPUT_DIR) && sbuild $(DSC)
+sbuild: $(OUTPUT_DIR)$(DSC)
+	[ -z "$(OUTPUT_DIR)" ] || cd $(OUTPUT_DIR); sbuild $(DSC)
 
 .PHONY: clean
 clean:
-	rm -rf build
+	rm -rf $(BUILD_DIR)
+	[ -z "$(OUTPUT_DIR)" ] || rm -rf $(OUTPUT_DIR)
+	rm -f *.deb *.dsc *.buildinfo *.build *.changes  $(PACKAGE)*.tar*
 	$(CARGO) clean
 
 .PHONY: upload
 upload: UPLOAD_DIST ?= $(DEB_DISTRIBUTION)
-upload: $(OUTPUT_DIR)/$(DEB) $(OUTPUT_DIR)/$(DEB_DBGSYM)
-	cd $(OUTPUT_DIR); tar cf - $(DEB) $(DEB_DBGSYM) | ssh -X repoman@repo.proxmox.com upload --product pve --dist $(UPLOAD_DIST)
+upload: $(OUTPUT_DIR)$(DEB) $(OUTPUT_DIR)$(DEB_DBGSYM)
+	[ -z "$(OUTPUT_DIR)" ] || cd $(OUTPUT_DIR); \
+	  tar cf - $(DEB) $(DEB_DBGSYM) | ssh -X repoman@repo.proxmox.com upload --product pve --dist $(UPLOAD_DIST)
