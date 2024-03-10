@@ -2,8 +2,7 @@ include /usr/share/dpkg/default.mk
 
 DESTDIR=
 PREFIX = /usr
-LIBDIR = $(PREFIX)/lib
-LIBEXECDIR = $(LIBDIR)
+LIBEXECDIR = $(PREFIX)/libexec
 DATAROOTDIR = $(PREFIX)/share
 
 PACKAGE := pve-esxi-import-tools
@@ -44,8 +43,7 @@ test:
 install: $(BINARY) $(SCRIPT)
 	install -m755 -d $(DESTDIR)$(LIBEXECDIR)/pve-esxi-import-tools
 	install -m755 -t $(DESTDIR)$(LIBEXECDIR)/pve-esxi-import-tools $(BINARY)
-	install -m755 -d $(DESTDIR)$(LIBDIR)/pve-esxi-import-tools
-	install -m755 -t $(DESTDIR)$(LIBDIR)/pve-esxi-import-tools $(SCRIPT)
+	install -m755 -t $(DESTDIR)$(LIBEXECDIR)/pve-esxi-import-tools $(SCRIPT)
 
 build-dir:
 
