@@ -45,6 +45,22 @@ def get_vm_vmx_info(vm: vim.VirtualMachine) -> Dict[str, str]:
         'checksum': vm.config.vmxConfigChecksum.hex() if vm.config.vmxConfigChecksum else 'N/A'
     }
 
+def get_vm_disk_info(vm: vim.VirtualMachine) -> Dict[str, int]:
+    disks = []
+    for device in vm.config.hardware.device:
+        if type(device).__name__ == 'vim.vm.device.VirtualDisk':
+            try:
+                (datastore, path) = parse_file_path(device.backing.fileName)
+                capacity = device.capacityInBytes
+                disks.append({
+                    'datastore': datastore,
+                    'path': path,
+                    'capacity': capacity,
+                })
+            except Exception as err:
+                # if we can't figure out the disk stuff that's fine...
+                print("failed to get disk information for esxi vm: ", err, file=sys.stderr)
+    return disks
 
 def get_all_datacenters(service_instance: vim.ServiceInstance) -> List[vim.Datacenter]:
     """Retrieve all datacenters from the ESXi/vCenter server."""
