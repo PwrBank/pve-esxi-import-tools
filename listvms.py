@@ -99,6 +99,7 @@ def main():
                 vm_info = {
                     'config': get_vm_vmx_info(vm),
                     'disks': get_vm_disk_info(vm),
+                    'power': vm.runtime.powerState,
                 }
                 datastore_info = {ds.name: ds.url for ds in vm.config.datastoreUrl}
                 data.setdefault(dc.name, {}).setdefault('vms', {})[vm.name] = vm_info
