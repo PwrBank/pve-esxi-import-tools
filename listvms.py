@@ -30,12 +30,15 @@ def list_vms(service_instance: vim.ServiceInstance) -> List[vim.VirtualMachine]:
     vm_view.Destroy()
     return vms
 
+def parse_file_path(path):
+    """Parse a path of the form '[datastore] file/path'"""
+    datastore_name, relative_path = path.split('] ', 1)
+    datastore_name = datastore_name.strip('[')
+    return (datastore_name, relative_path)
 
 def get_vm_vmx_info(vm: vim.VirtualMachine) -> Dict[str, str]:
     """Extract VMX file path and checksum from a VM object."""
-    vmx_path = vm.config.files.vmPathName
-    datastore_name, relative_vmx_path = vmx_path.split('] ', 1)
-    datastore_name = datastore_name.strip('[')
+    datastore_name, relative_vmx_path = parse_file_path(vm.config.files.vmPathName)
     return {
         'datastore': datastore_name,
         'path': relative_vmx_path,
