@@ -92,17 +92,19 @@ def main():
         datacenters = get_all_datacenters(si)
         vms = list_vms(si)
         data = {}
-
-        for dc in datacenters:
-            dc_data = {'vms': {}, 'datastores': {}}
-            for vm in vms:
-                if get_datacenter_of_vm(vm) == dc:
-                    vm_info = {'config': get_vm_vmx_info(vm)}
-                    datastore_info = {ds.name: ds.url for ds in vm.config.datastoreUrl}
-                    dc_data['vms'][vm.name] = vm_info
-                    dc_data['datastores'].update(datastore_info)
-
-            data[dc.name] = dc_data
+        for vm in vms:
+            name = 'vm ' + vm.name
+            try:
+                dc = get_datacenter_of_vm(vm)
+                vm_info = {
+                    'config': get_vm_vmx_info(vm),
+                    'disks': get_vm_disk_info(vm),
+                }
+                datastore_info = {ds.name: ds.url for ds in vm.config.datastoreUrl}
+                data.setdefault(dc.name, {}).setdefault('vms', {})[vm.name] = vm_info
+                data.setdefault(dc.name, {}).setdefault('datastores', {}).update(datastore_info)
+            except Exception as err:
+                print("failed to get info for", name, ':', err, file=sys.stderr)
 
         print(json.dumps(data, indent=2))
     finally:
