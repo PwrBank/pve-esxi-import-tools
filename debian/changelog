@@ -1,3 +1,9 @@
+pve-esxi-import-tools (0.2.0) bookworm; urgency=medium
+
+  * rename --insecure option to slightly more telling --skip-cert-verification
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 12 Mar 2024 16:00:26 +0100
+
 pve-esxi-import-tools (0.1.2) bookworm; urgency=medium
 
   * default to validating tls certificates and add --insecure option to
