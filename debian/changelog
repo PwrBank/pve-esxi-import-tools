@@ -1,3 +1,10 @@
+pve-esxi-import-tools (0.1.2) bookworm; urgency=medium
+
+  * default to validating tls certificates and add --insecure option to
+    listvms.py and esxi-folder-fuse to disable verification
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 12 Mar 2024 13:46:46 +0100
+
 pve-esxi-import-tools (0.1.1) bookworm; urgency=medium
 
   * listvms.py: add a disks array to vms which shows the disks' capacities
