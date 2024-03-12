@@ -72,7 +72,7 @@ def get_all_datacenters(service_instance: vim.ServiceInstance) -> List[vim.Datac
     return datacenters
 
 def main():
-    if sys.argv[1] == '--insecure':
+    if sys.argv[1] == '--skip-cert-verification':
         del sys.argv[1]
         ssl_context = ssl._create_unverified_context()
     else:

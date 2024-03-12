@@ -56,7 +56,7 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
           --change-user=UID           change to the provided user after mounting\n  \
           --change-group=UID          change to the provided group after mounting\n  \
           --ready-fd=FDNUM            close file descriptor FDNUM when ready\n  \
-          --insecure                  disable certificate verification\n\
+          --skip-cert-verification    disable certificate verification\n\
         "
     );
 
@@ -72,7 +72,7 @@ struct Args {
     change_user: Option<String>,
     change_group: Option<String>,
     ready_fd: Option<RawFd>,
-    insecure: bool,
+    skip_cert_verification: bool,
 
     // positional:
     host: String,
@@ -164,8 +164,8 @@ fn parse_args() -> Result<Args, Error> {
         args.ready_fd = Some(value);
     }
 
-    while argparse.contains("--insecure") {
-        args.insecure = true;
+    while argparse.contains("--skip-cert-verification") {
+        args.skip_cert_verification = true;
     }
 
     while argparse.contains("--debug") {
@@ -250,7 +250,7 @@ async fn main() -> Result<(), Error> {
     }
 
     let mut connector = SslConnector::builder(SslMethod::tls()).unwrap();
-    if args.insecure {
+    if args.skip_cert_verification {
         connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
     }
     let connector = connector.build();
