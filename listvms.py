@@ -1,10 +1,11 @@
 #!/usr/bin/python3
 
 from typing import List, Dict, Optional
-import sys
 import json
 import os
-from pyVim.connect import SmartConnectNoSSL, Disconnect
+import ssl
+import sys
+from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
 
 
@@ -70,8 +71,13 @@ def get_all_datacenters(service_instance: vim.ServiceInstance) -> List[vim.Datac
     dc_view.Destroy()
     return datacenters
 
-
 def main():
+    if sys.argv[1] == '--insecure':
+        del sys.argv[1]
+        ssl_context = ssl._create_unverified_context()
+    else:
+        ssl_context = None
+
     esxi_host = sys.argv[1]
     esxi_user = sys.argv[2]
     esxi_password_file = sys.argv[3]
@@ -83,7 +89,12 @@ def main():
             esxi_password = esxi_password[:-1]
 
     try:
-        si = SmartConnectNoSSL(host=esxi_host, user=esxi_user, pwd=esxi_password)
+        si = SmartConnect(
+            host=esxi_host,
+            user=esxi_user,
+            pwd=esxi_password,
+            sslContext=ssl_context,
+        )
     except OSError as err:
         print(f"failed to connect: {err}")
         sys.exit(1)
