@@ -55,7 +55,8 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
           -o MOUNT_OPTIONS            pass a mount option to fuse, such as allow_other\n  \
           --change-user=UID           change to the provided user after mounting\n  \
           --change-group=UID          change to the provided group after mounting\n  \
-          --ready-fd=FDNUM            close file descriptor FDNUM when ready\n\
+          --ready-fd=FDNUM            close file descriptor FDNUM when ready\n  \
+          --insecure                  disable certificate verification\n\
         "
     );
 
@@ -71,6 +72,7 @@ struct Args {
     change_user: Option<String>,
     change_group: Option<String>,
     ready_fd: Option<RawFd>,
+    insecure: bool,
 
     // positional:
     host: String,
@@ -162,6 +164,10 @@ fn parse_args() -> Result<Args, Error> {
         args.ready_fd = Some(value);
     }
 
+    while argparse.contains("--insecure") {
+        args.insecure = true;
+    }
+
     while argparse.contains("--debug") {
         log_filter_level = Some(log::LevelFilter::Debug);
     }
@@ -244,7 +250,9 @@ async fn main() -> Result<(), Error> {
     }
 
     let mut connector = SslConnector::builder(SslMethod::tls()).unwrap();
-    connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
+    if args.insecure {
+        connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
+    }
     let connector = connector.build();
 
     let client = Arc::new(EsxiClient::new(
