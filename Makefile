@@ -85,7 +85,7 @@ sbuild: $(OUTPUT_DIR)$(DSC)
 
 .PHONY: clean
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) $(PACKAGE)-[0-9]*/
 	[ -z "$(OUTPUT_DIR)" ] || rm -rf $(OUTPUT_DIR)
 	rm -f *.deb *.dsc *.buildinfo *.build *.changes  $(PACKAGE)*.tar*
 	$(CARGO) clean
