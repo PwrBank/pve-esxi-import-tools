@@ -216,6 +216,23 @@ impl EsxiClient {
             .context("failed to parse content size")
     }
 
+    /// Check the existence of an URL.
+    pub async fn path_exists(
+        &self,
+        datacenter: &str,
+        datastore: &str,
+        path: &str,
+    ) -> Result<bool, Error> {
+        match self
+            .make_request(|| Ok(Request::head(self.file_url(datacenter, datastore, path))))
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(err) if err.downcast_ref::<NotFound>().is_some() => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
     /// Get a `Read`able file.
     pub async fn open_file(
         self: &Arc<Self>,
