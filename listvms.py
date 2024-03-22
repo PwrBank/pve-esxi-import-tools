@@ -1,9 +1,11 @@
 #!/usr/bin/python3
 
-from typing import List, Dict, Optional
 import json
 import ssl
 import sys
+
+from typing import List, Dict, Optional
+
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
 
