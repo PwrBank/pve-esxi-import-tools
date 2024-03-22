@@ -1,16 +1,59 @@
 #!/usr/bin/python3
 
+import dataclasses
 import json
 import ssl
 import sys
 
-from typing import List, Dict, Optional
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
 
 
-def get_datacenter_of_vm(vm: vim.VirtualMachine) -> Optional[vim.Datacenter]:
+@dataclass
+class VmVmxInfo:
+    datastore: str
+    path: Path
+    checksum: str
+
+
+@dataclass
+class VmDiskInfo:
+    datastore: str
+    path: Path
+    capacity: int
+
+
+@dataclass
+class VmInfo:
+    config: VmVmxInfo
+    disks: list[VmDiskInfo]
+    power: str
+
+
+def json_dump_helper(obj: Any) -> Any:
+    """Converts otherwise unserializable objects to types that can be
+    serialized as JSON.
+
+    Raises:
+        TypeError: If the conversion of the object is not supported.
+    """
+    if dataclasses.is_dataclass(obj):
+        return dataclasses.asdict(obj)
+
+    match obj:
+        case Path():
+            return str(obj)
+
+    raise TypeError(
+        f"Can't make object of type {type(obj)} JSON-serializable: {repr(obj)}"
+    )
+
+
+def get_datacenter_of_vm(vm: vim.VirtualMachine) -> vim.Datacenter | None:
     """Find the Datacenter object a VM belongs to."""
     current = vm.parent
     while current:
@@ -20,10 +63,10 @@ def get_datacenter_of_vm(vm: vim.VirtualMachine) -> Optional[vim.Datacenter]:
     return None
 
 
-def list_vms(service_instance: vim.ServiceInstance) -> List[vim.VirtualMachine]:
+def list_vms(service_instance: vim.ServiceInstance) -> list[vim.VirtualMachine]:
     """List all VMs on the ESXi/vCenter server."""
     content = service_instance.content
-    vm_view = content.viewManager.CreateContainerView(
+    vm_view: Any = content.viewManager.CreateContainerView(
         content.rootFolder,
         [vim.VirtualMachine],
         True,
@@ -32,39 +75,36 @@ def list_vms(service_instance: vim.ServiceInstance) -> List[vim.VirtualMachine]:
     vm_view.Destroy()
     return vms
 
-def parse_file_path(path):
+def parse_file_path(path) -> tuple[str, Path]:
     """Parse a path of the form '[datastore] file/path'"""
     datastore_name, relative_path = path.split('] ', 1)
     datastore_name = datastore_name.strip('[')
-    return (datastore_name, relative_path)
+    return (datastore_name, Path(relative_path))
 
-def get_vm_vmx_info(vm: vim.VirtualMachine) -> Dict[str, str]:
+def get_vm_vmx_info(vm: vim.VirtualMachine) -> VmVmxInfo:
     """Extract VMX file path and checksum from a VM object."""
     datastore_name, relative_vmx_path = parse_file_path(vm.config.files.vmPathName)
-    return {
-        'datastore': datastore_name,
-        'path': relative_vmx_path,
-        'checksum': vm.config.vmxConfigChecksum.hex() if vm.config.vmxConfigChecksum else 'N/A'
-    }
 
-def get_vm_disk_info(vm: vim.VirtualMachine) -> Dict[str, int]:
+    return VmVmxInfo(
+        datastore=datastore_name,
+        path=relative_vmx_path,
+        checksum=vm.config.vmxConfigChecksum.hex() if vm.config.vmxConfigChecksum else 'N/A'
+    )
+
+def get_vm_disk_info(vm: vim.VirtualMachine) -> list[VmDiskInfo]:
     disks = []
     for device in vm.config.hardware.device:
-        if type(device).__name__ == 'vim.vm.device.VirtualDisk':
+        if isinstance(device, vim.vm.device.VirtualDisk):
             try:
                 (datastore, path) = parse_file_path(device.backing.fileName)
                 capacity = device.capacityInBytes
-                disks.append({
-                    'datastore': datastore,
-                    'path': path,
-                    'capacity': capacity,
-                })
+                disks.append(VmDiskInfo(datastore, path, capacity))
             except Exception as err:
                 # if we can't figure out the disk stuff that's fine...
                 print("failed to get disk information for esxi vm: ", err, file=sys.stderr)
     return disks
 
-def get_all_datacenters(service_instance: vim.ServiceInstance) -> List[vim.Datacenter]:
+def get_all_datacenters(service_instance: vim.ServiceInstance) -> list[vim.Datacenter]:
     """Retrieve all datacenters from the ESXi/vCenter server."""
     content = service_instance.content
     dc_view = content.viewManager.CreateContainerView(content.rootFolder, [vim.Datacenter], True)
@@ -110,18 +150,25 @@ def main():
             name = 'vm ' + vm.name
             try:
                 dc = get_datacenter_of_vm(vm)
-                vm_info = {
-                    'config': get_vm_vmx_info(vm),
-                    'disks': get_vm_disk_info(vm),
-                    'power': vm.runtime.powerState,
-                }
+                if dc is None:
+                    print(
+                        f"Failed to get datacenter for {name}",
+                        file=sys.stderr
+                    )
+
+                vm_info = VmInfo(
+                    config=get_vm_vmx_info(vm),
+                    disks=get_vm_disk_info(vm),
+                    power=vm.runtime.powerState,
+                )
+
                 datastore_info = {ds.name: ds.url for ds in vm.config.datastoreUrl}
                 data.setdefault(dc.name, {}).setdefault('vms', {})[vm.name] = vm_info
                 data.setdefault(dc.name, {}).setdefault('datastores', {}).update(datastore_info)
             except Exception as err:
                 print("failed to get info for", name, ':', err, file=sys.stderr)
 
-        print(json.dumps(data, indent=2))
+        print(json.dumps(data, indent=2, default=json_dump_helper))
     finally:
         Disconnect(si)
 
