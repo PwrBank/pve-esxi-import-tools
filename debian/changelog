@@ -1,3 +1,16 @@
+pve-esxi-import-tools (0.3.0) bookworm; urgency=medium
+
+  * make datastores discoverable
+
+  * esxi api client: output connection error via stderr
+
+  * esxi api client: make cert validation errors show a more consise
+    message
+
+  * reduce log spam on startup, log when the mount is ready
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 22 Mar 2024 16:13:53 +0100
+
 pve-esxi-import-tools (0.2.0) bookworm; urgency=medium
 
   * rename --insecure option to slightly more telling --skip-cert-verification
