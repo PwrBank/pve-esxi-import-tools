@@ -254,7 +254,7 @@ def main():
                     file=sys.stderr,
                 )
 
-    print(json.dumps(data, indent=2, default=json_dump_helper))
+    json.dump(data, sys.stdout, indent=2, default=json_dump_helper)
 
 
 if __name__ == "__main__":
