@@ -2,7 +2,6 @@
 
 from typing import List, Dict, Optional
 import json
-import os
 import ssl
 import sys
 from pyVim.connect import SmartConnect, Disconnect
@@ -103,7 +102,6 @@ def main():
         sys.exit(1)
 
     try:
-        datacenters = get_all_datacenters(si)
         vms = list_vms(si)
         data = {}
         for vm in vms:
