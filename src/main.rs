@@ -283,7 +283,7 @@ async fn main() -> Result<(), Error> {
                         other_fs_datastore = fs_datacenter.create_datastore(datastore);
                         (&other_fs_datastore, datastore, path)
                     } else {
-                        log::info!("ignoring {disk:?} - failed to resolve datastore");
+                        log::debug!("ignoring {disk:?} - failed to resolve datastore");
                         continue;
                     }
                 } else {
@@ -291,11 +291,11 @@ async fn main() -> Result<(), Error> {
                 };
 
                 if check_file_exists(fs_datastore, path).await? {
-                    log::info!(
+                    log::debug!(
                         "discovered {disk:?} found at {datacenter:?}/{datastore:?}/{path:?}"
                     );
                 } else {
-                    log::info!(
+                    log::debug!(
                         "ignoring {disk:?} - not found at {datacenter:?}/{datastore:?}/{path:?}"
                     );
                 }
@@ -310,6 +310,8 @@ async fn main() -> Result<(), Error> {
             log::error!("error closing ready-fd: {err:?}");
         }
     }
+
+    log::info!("esxi fuse mount ready");
 
     while let Some(request) = fuse.next().await {
         let request = request.context("error fetching next fuse request")?;
