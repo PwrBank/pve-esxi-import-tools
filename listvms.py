@@ -95,7 +95,10 @@ def main():
             pwd=esxi_password,
             sslContext=ssl_context,
         )
-    except OSError as err:
+    except ssl.SSLCertVerificationError as err:
+        print("failed to connect: certificate verification failed", file=sys.stderr)
+        sys.exit(1)
+    except Exception as err:
         print(f"failed to connect: {err}", file=sys.stderr)
         sys.exit(1)
 
