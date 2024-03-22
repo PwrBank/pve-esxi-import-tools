@@ -170,21 +170,28 @@ def list_vms(service_instance: vim.ServiceInstance) -> list[vim.VirtualMachine]:
     vm_view.Destroy()
     return vms
 
+
 def parse_file_path(path) -> tuple[str, Path]:
     """Parse a path of the form '[datastore] file/path'"""
-    datastore_name, relative_path = path.split('] ', 1)
-    datastore_name = datastore_name.strip('[')
+    datastore_name, relative_path = path.split("] ", 1)
+    datastore_name = datastore_name.strip("[")
     return (datastore_name, Path(relative_path))
+
 
 def get_vm_vmx_info(vm: vim.VirtualMachine) -> VmVmxInfo:
     """Extract VMX file path and checksum from a VM object."""
-    datastore_name, relative_vmx_path = parse_file_path(vm.config.files.vmPathName)
+    datastore_name, relative_vmx_path = parse_file_path(
+        vm.config.files.vmPathName
+    )
 
     return VmVmxInfo(
         datastore=datastore_name,
         path=relative_vmx_path,
-        checksum=vm.config.vmxConfigChecksum.hex() if vm.config.vmxConfigChecksum else 'N/A'
+        checksum=vm.config.vmxConfigChecksum.hex()
+        if vm.config.vmxConfigChecksum
+        else "N/A",
     )
+
 
 def get_vm_disk_info(vm: vim.VirtualMachine) -> list[VmDiskInfo]:
     disks = []
@@ -196,13 +203,22 @@ def get_vm_disk_info(vm: vim.VirtualMachine) -> list[VmDiskInfo]:
                 disks.append(VmDiskInfo(datastore, path, capacity))
             except Exception as err:
                 # if we can't figure out the disk stuff that's fine...
-                print("failed to get disk information for esxi vm: ", err, file=sys.stderr)
+                print(
+                    "failed to get disk information for esxi vm: ",
+                    err,
+                    file=sys.stderr,
+                )
     return disks
 
-def get_all_datacenters(service_instance: vim.ServiceInstance) -> list[vim.Datacenter]:
+
+def get_all_datacenters(
+    service_instance: vim.ServiceInstance,
+) -> list[vim.Datacenter]:
     """Retrieve all datacenters from the ESXi/vCenter server."""
     content = service_instance.content
-    dc_view = content.viewManager.CreateContainerView(content.rootFolder, [vim.Datacenter], True)
+    dc_view: Any = content.viewManager.CreateContainerView(
+        content.rootFolder, [vim.Datacenter], True
+    )
     datacenters = dc_view.view
     dc_view.Destroy()
     return datacenters
