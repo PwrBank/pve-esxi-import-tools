@@ -96,7 +96,7 @@ def main():
             sslContext=ssl_context,
         )
     except OSError as err:
-        print(f"failed to connect: {err}")
+        print(f"failed to connect: {err}", file=sys.stderr)
         sys.exit(1)
 
     try:
