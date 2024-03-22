@@ -28,6 +28,7 @@ BINARY = $(COMPILEDIR)/esxi-folder-fuse
 SCRIPT = listvms.py
 
 CARGO ?= cargo
+MYPY ?= mypy
 
 .PHONY: all
 all: $(BINARY)
@@ -40,8 +41,17 @@ check: test
 test:
 	$(CARGO) test $(CARGO_BUILD_ARGS)
 
+.lint-incremental: $(SCRIPT)
+	$(MYPY) $?
+	touch "$@"
+
+.PHONY: lint
+lint: $(SCRIPT)
+	$(MYPY) $(SCRIPT)
+	touch ".lint-incremental"
+
 .PHONY: install
-install: $(BINARY) $(SCRIPT)
+install: $(BINARY) $(SCRIPT) .lint-incremental
 	install -m755 -d $(DESTDIR)$(LIBEXECDIR)/pve-esxi-import-tools
 	install -m755 -t $(DESTDIR)$(LIBEXECDIR)/pve-esxi-import-tools $(BINARY)
 	install -m755 -t $(DESTDIR)$(LIBEXECDIR)/pve-esxi-import-tools $(SCRIPT)
@@ -55,6 +65,7 @@ $(BUILD_DIR):
 	cp -t $@.tmp -a \
 	  debian \
 	  Makefile \
+	  mypy.ini \
 	  listvms.py \
 	  Cargo.toml \
 	  src
