@@ -96,7 +96,7 @@ def main():
             sslContext=ssl_context,
         )
     except ssl.SSLCertVerificationError as err:
-        print("failed to connect: certificate verification failed", file=sys.stderr)
+        print("failed to verify certificate - add the CA of your ESXi to the system trust store or skip verification", file=sys.stderr)
         sys.exit(1)
     except Exception as err:
         print(f"failed to connect: {err}", file=sys.stderr)
