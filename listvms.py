@@ -5,7 +5,6 @@ import dataclasses
 import json
 import ssl
 import sys
-import textwrap
 
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -95,7 +94,7 @@ def connect_to_esxi_host(
             "system trust store or skip verification",
         )
 
-    except vim.fault.InvalidLogin as err:
+    except vim.fault.InvalidLogin:
         raise ConnectionError(
             "failed to login due to an incorrect username or password",
         )
