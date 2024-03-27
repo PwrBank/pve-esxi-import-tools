@@ -17,6 +17,8 @@ use percent_encoding::{percent_encode, AsciiSet};
 use tokio::io::AsyncRead;
 use tokio::task::JoinHandle;
 
+use tokio::sync::SemaphorePermit;
+
 use proxmox_http::client::Client;
 
 #[derive(Clone, Copy, Debug)]
@@ -59,6 +61,7 @@ pub struct EsxiClient {
     client: Client,
     folder_url: String,
     auth_header: String,
+    connection_limit: ConnectionLimit,
 }
 
 impl EsxiClient {
@@ -76,6 +79,7 @@ impl EsxiClient {
             folder_url: format!("{base_url}/folder"),
             auth_header: format!("Basic {creds}"),
             client: Client::with_ssl_connector(connector, Default::default()),
+            connection_limit: ConnectionLimit::new(),
         }
     }
 
@@ -94,7 +98,10 @@ impl EsxiClient {
     where
         F: FnMut() -> Result<http::request::Builder, Error>,
     {
+        let mut permit = self.connection_limit.acquire().await;
+
         let mut retry = 0;
+        let mut retry_guard = None;
         loop {
             retry += 1;
 
@@ -111,6 +118,12 @@ impl EsxiClient {
 
             let status = response.status();
             if status.as_u16() == 503 {
+                if retry_guard.is_none() {
+                    let guard;
+                    (guard, permit) = self.connection_limit.retry_guard(permit).await;
+                    retry_guard = Some(guard);
+                }
+
                 if retry < 5 {
                     log::warn!("rate limited, retrying ({retry} of 5)...");
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
@@ -353,5 +366,45 @@ impl AsyncRead for EsxiFile {
                 client.download_do(&query, Some(range)).await
             }));
         }
+    }
+}
+
+/// Multiple concurrent tasks can use this as a sort of semaphore for making http requests.
+struct ConnectionLimit {
+    /// Hyper might open multiple concurrent connections, let's limit this specifically to avoid
+    /// esxi from getting bombarded with requests.
+    requests: tokio::sync::Semaphore,
+
+    /// When we enter a retry loop, only 1 task should actually actively do the retries.
+    retry: tokio::sync::Mutex<()>,
+}
+
+impl ConnectionLimit {
+    fn new() -> Self {
+        Self {
+            requests: tokio::sync::Semaphore::new(4),
+            retry: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// This is supposed to cover an entire request including its retries.
+    async fn acquire(&self) -> SemaphorePermit<'_> {
+        // acquire can only fail when the semaphore is closed...
+        self.requests
+            .acquire()
+            .await
+            .expect("failed to acquire semaphore")
+    }
+
+    /// This ensures only 1 task keeps retrying making new requests.
+    ///
+    /// To enforce that the retry lock can only be held with a valid permit we require it to be
+    /// passed through here.
+    async fn retry_guard<'a>(
+        &self,
+        permit: SemaphorePermit<'a>,
+    ) -> (tokio::sync::MutexGuard<()>, SemaphorePermit<'a>) {
+        let guard = self.retry.lock().await;
+        (guard, permit)
     }
 }
