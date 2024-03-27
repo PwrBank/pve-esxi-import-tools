@@ -6,7 +6,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use anyhow::Error;
+use anyhow::{bail, Error};
 use hyper::body::Bytes;
 use tokio::sync::watch;
 
@@ -113,10 +113,7 @@ impl Cache {
         };
 
         let result = match fill(block_offset, block_offset.saturating_add(self.block_size)).await {
-            Err(err) => {
-                log::error!("cached read failed: {err:?}");
-                None
-            }
+            Err(err) => bail!("cached read failed: {err:?}"),
             Ok(None) => None,
             Ok(Some(data)) => Some(Arc::new(Entry { data })),
         };
