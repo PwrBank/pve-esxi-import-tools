@@ -92,6 +92,11 @@ def connect_to_esxi_host(
             "system trust store or skip verification",
         )
 
+    except vim.fault.InvalidLogin as err:
+        raise ConnectionError(
+            "failed to login due to an incorrect username or password",
+        )
+
     finally:
         if connection is not None:
             Disconnect(connection)
