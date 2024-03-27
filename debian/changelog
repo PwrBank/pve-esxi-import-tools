@@ -7,7 +7,7 @@ pve-esxi-import-tools (0.4.0) bookworm; urgency=medium
   * esxi api client: rework argument parsing and add typing to better match
     a more modern and ergonomic python coding style
 
- -- Proxmox Support Team <support@proxmox.com>  Wed, 27 Mar 2024 12:13:09 +0100
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 27 Mar 2024 12:21:50 +0100
 
 pve-esxi-import-tools (0.3.0) bookworm; urgency=medium
 
