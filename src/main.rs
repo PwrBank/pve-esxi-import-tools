@@ -200,11 +200,12 @@ fn parse_manifest(manifest_path: &OsStr) -> Result<(), Error> {
 }
 
 fn main() {
+    let cpus = num_cpus::get();
     let runtime = proxmox_async::runtime::get_runtime_with_builder(|| {
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         builder.enable_all();
         builder.max_blocking_threads(2);
-        builder.worker_threads(4);
+        builder.worker_threads(cpus.clamp(2, 4));
         builder
     });
 
