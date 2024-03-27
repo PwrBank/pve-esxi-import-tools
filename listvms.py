@@ -111,14 +111,14 @@ def connect_to_esxi_host(
 @dataclass
 class VmVmxInfo:
     datastore: str
-    path: Path
+    path: str
     checksum: str
 
 
 @dataclass
 class VmDiskInfo:
     datastore: str
-    path: Path
+    path: str
     capacity: int
 
 
@@ -138,10 +138,6 @@ def json_dump_helper(obj: Any) -> Any:
     """
     if dataclasses.is_dataclass(obj):
         return dataclasses.asdict(obj)
-
-    match obj:
-        case Path():
-            return str(obj)
 
     raise TypeError(
         f"Can't make object of type {type(obj)} JSON-serializable: {repr(obj)}"
@@ -171,11 +167,11 @@ def list_vms(service_instance: vim.ServiceInstance) -> list[vim.VirtualMachine]:
     return vms
 
 
-def parse_file_path(path) -> tuple[str, Path]:
+def parse_file_path(path) -> tuple[str, str]:
     """Parse a path of the form '[datastore] file/path'"""
     datastore_name, relative_path = path.split("] ", 1)
     datastore_name = datastore_name.strip("[")
-    return (datastore_name, Path(relative_path))
+    return (datastore_name, relative_path)
 
 
 def get_vm_vmx_info(vm: vim.VirtualMachine) -> VmVmxInfo:
