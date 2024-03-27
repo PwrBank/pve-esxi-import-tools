@@ -1,3 +1,14 @@
+pve-esxi-import-tools (0.4.0) bookworm; urgency=medium
+
+  * esxi api client: improve error message when password file is missing
+
+  * esxi api client: improve error message for invalid credentials
+
+  * esxi api client: rework argument parsing and add typing to better match
+    a more modern and ergonomic python coding style
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 27 Mar 2024 12:13:09 +0100
+
 pve-esxi-import-tools (0.3.0) bookworm; urgency=medium
 
   * make datastores discoverable
