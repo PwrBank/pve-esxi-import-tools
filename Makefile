@@ -89,7 +89,7 @@ dsc:
 	lintian $(OUTPUT_DIR)$(DSC)
 
 $(OUTPUT_DIR)$(DSC): $(BUILD_DIR)
-	cd $(BUILD_DIR) && dpkg-buildpackage -S -uc -us
+	cd $(BUILD_DIR) && dpkg-buildpackage -S -uc -us -d
 
 sbuild: $(OUTPUT_DIR)$(DSC)
 	[ -z "$(OUTPUT_DIR)" ] || cd $(OUTPUT_DIR); sbuild $(DSC)
