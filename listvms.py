@@ -69,10 +69,13 @@ def connect_to_esxi_host(
         else None
     )
 
-    with open(args.password_file) as pw_file:
-        password = pw_file.read()
-        if password.endswith("\n"):
-            password = password[:-1]
+    try:
+        with open(args.password_file) as pw_file:
+            password = pw_file.read()
+            if password.endswith("\n"):
+                password = password[:-1]
+    except FileNotFoundError:
+        raise Exception(f"failed to find password file {args.password_file}")
 
     connection = None
 
