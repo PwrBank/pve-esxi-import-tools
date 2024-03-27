@@ -199,8 +199,22 @@ fn parse_manifest(manifest_path: &OsStr) -> Result<(), Error> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Error> {
+fn main() {
+    let runtime = proxmox_async::runtime::get_runtime_with_builder(|| {
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.enable_all();
+        builder.max_blocking_threads(2);
+        builder.worker_threads(4);
+        builder
+    });
+
+    if let Err(err) = runtime.block_on(main_do()) {
+        eprintln!("Error: {}", err);
+        std::process::exit(-1);
+    }
+}
+
+async fn main_do() -> Result<(), Error> {
     let arg0 = std::env::args_os().next().unwrap();
     let args = match parse_args() {
         Ok(args) => args,
