@@ -262,5 +262,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as err:
-        print(f"Encountered unexpected error: {err}", file=sys.stderr)
+        print(err, file=sys.stderr)
         sys.exit(1)
