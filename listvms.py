@@ -22,37 +22,26 @@ def parse_args() -> argparse.Namespace:
         description="List VMs on an ESXi host.",
     )
 
-    def _squeeze_and_wrap(text: str) -> str:
-        """Makes it easier to write help text using multiline strings."""
-        text = " ".join(text.split())
-
-        return "\n".join(textwrap.wrap(text, 60, break_on_hyphens=False))
-
     parser.add_argument(
         "--skip-cert-verification",
-        help=_squeeze_and_wrap(
-            """Skip the verification of TLS certs, e.g. to allow self-signed
-            certs."""
-        ),
+        help="Skip the verification of TLS certs, e.g. to allow self-signed"
+        " certs.",
         action="store_true",
     )
 
     parser.add_argument(
         "hostname",
-        help=_squeeze_and_wrap("""The name or address of the ESXi host."""),
+        help="The name or address of the ESXi host.",
     )
 
     parser.add_argument(
         "username",
-        help=_squeeze_and_wrap("""The name of the user to connect with."""),
+        help="The name of the user to connect with.",
     )
 
     parser.add_argument(
         "password_file",
-        help=_squeeze_and_wrap(
-            """The file which contains the password for the provided
-            username."""
-        ),
+        help="The file which contains the password for the provided username.",
         type=Path,
     )
 
