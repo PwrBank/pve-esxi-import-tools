@@ -1,4 +1,4 @@
-pve-esxi-import-tools (0.5.1) bookworm; urgency=medium
+pve-esxi-import-tools (0.6.0) bookworm; urgency=medium
 
   * limit async runtime to 2 to 4 worker threads (depending on CPU count) and
     2 blocking threads
@@ -10,7 +10,7 @@ pve-esxi-import-tools (0.5.1) bookworm; urgency=medium
   * attempt to negotiate HTTP/2 protocol via ALPN to reduce the amount of
     concurrent connections on modern ESXi 8+
 
- -- Proxmox Support Team <support@proxmox.com>  Thu, 28 Mar 2024 13:44:31 +0100
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 28 Mar 2024 16:09:17 +0100
 
 pve-esxi-import-tools (0.5.0) bookworm; urgency=medium
 
