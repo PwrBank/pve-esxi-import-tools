@@ -43,7 +43,7 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
     let _ = out.write_all(arg0.as_bytes());
     let _ = write!(
         out,
-        " [options] <host> <manifest-file> <mount-path>\n\
+        " [options] <host>[:<port>] <manifest-file> <mount-path>\n\
         options:\n  \
           --cache-page-size=BYTES     size of a per-file cache entry\n  \
           --cache-page-count=COUNT    number of cache entries per file\n  \
