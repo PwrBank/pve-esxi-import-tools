@@ -14,7 +14,7 @@ homepage = "https://www.proxmox.com"
 anyhow = "1"
 futures = "0.3.28"
 http = "0.2.9"
-hyper = "0.14"
+hyper = { version = "0.14", features = [ "http1", "http2" ] }
 libc = "0.2"
 log = "0.4"
 nix = "0.26"
