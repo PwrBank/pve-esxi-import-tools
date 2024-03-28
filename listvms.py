@@ -29,6 +29,14 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--port",
+        type=int,
+        metavar='PORT',
+        default=443,
+        help="Use a port other than 443."
+    )
+
+    parser.add_argument(
         "hostname",
         help="The name or address of the ESXi host.",
     )
@@ -50,6 +58,7 @@ def parse_args() -> argparse.Namespace:
 @dataclass
 class EsxiConnectonArgs:
     hostname: str
+    port: int
     username: str
     password_file: Path
     skip_cert_verification: bool = False
@@ -81,6 +90,7 @@ def connect_to_esxi_host(
     try:
         connection = SmartConnect(
             host=args.hostname,
+            port=args.port,
             user=args.username,
             pwd=password,
             sslContext=ssl_context,
@@ -246,6 +256,7 @@ def main():
 
     connection_args = EsxiConnectonArgs(
         hostname=args.hostname,
+        port=args.port,
         username=args.username,
         password_file=args.password_file,
         skip_cert_verification=args.skip_cert_verification,
