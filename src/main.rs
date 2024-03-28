@@ -125,7 +125,8 @@ fn parse_args() -> Result<Args, Error> {
     if let Some(value) =
         argparse.opt_value_from_os_str("--password-file", |os| Ok::<_, Error>(os.to_owned()))?
     {
-        args.password = std::fs::read_to_string(value).context("failed to read file {value:?}")?;
+        args.password = std::fs::read_to_string(&value)
+            .with_context(|| format!("failed to read file {value:?}"))?;
         if args.password.ends_with('\n') {
             args.password.pop();
         }
