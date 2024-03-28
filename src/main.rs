@@ -269,6 +269,9 @@ async fn main_do() -> Result<(), Error> {
     if args.skip_cert_verification {
         connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
     }
+    connector
+        .set_alpn_protos(b"\x02h2")
+        .context("failed to configure alpn protocols")?;
     let connector = connector.build();
 
     let client = Arc::new(EsxiClient::new(
