@@ -94,7 +94,7 @@ impl Fs {
             Request::Forget(r) => self.handle_forget(r),
             Request::Lookup(r) => self.handle_lookup(r).await,
             Request::ReaddirPlus(r) => self.handle_readdir(r).await,
-            Request::Read(r) => self.handle_read(r).await,
+            Request::Read(r) => self.handle_read(r.into()).await,
             Request::Open(r) => self.handle_open(r),
             Request::Release(r) => self.handle_release(r),
             _ => {
@@ -183,16 +183,16 @@ impl Fs {
         }
     }
 
-    async fn handle_read(self: Arc<Self>, read: requests::Read) -> Result<(), Error> {
+    async fn handle_read(self: Arc<Self>, read: ReadRequest) -> Result<(), Error> {
         if read.inode == ROOT_ID {
-            return Ok(read.fail(libc::EISDIR)?);
+            return Ok(read.into_inner().fail(libc::EISDIR)?);
         }
 
         let entry = self.fs.inodes.lock().unwrap().get(&read.inode).cloned();
         match entry {
             None => {
                 log::error!("read on forgotten inode");
-                Ok(read.fail(libc::ENOENT)?)
+                Ok(read.into_inner().fail(libc::ENOENT)?)
             }
             Some(entry) => entry.handle_read(read).await,
         }
@@ -287,10 +287,10 @@ impl Inode {
         }
     }
 
-    async fn handle_read(&self, read: requests::Read) -> Result<(), Error> {
+    async fn handle_read(&self, read: ReadRequest) -> Result<(), Error> {
         match self {
-            Self::Datacenter(_) => Ok(read.fail(libc::EISDIR)?),
-            Self::Dir(_) => Ok(read.fail(libc::EISDIR)?),
+            Self::Datacenter(_) => Ok(read.into_inner().fail(libc::EISDIR)?),
+            Self::Dir(_) => Ok(read.into_inner().fail(libc::EISDIR)?),
             Self::File(file) => file.handle_read(read).await,
         }
     }
@@ -719,7 +719,7 @@ impl File {
         file_stat(self.inode, &self.file)
     }
 
-    async fn handle_read(&self, read: requests::Read) -> Result<(), Error> {
+    async fn handle_read(&self, read: ReadRequest) -> Result<(), Error> {
         // Holds the Arcs to the data we reference.
         let mut response_refs = Vec::new();
         // Holds the iovecs.
@@ -751,7 +751,7 @@ impl File {
                     }
 
                     if response.is_empty() && size <= len {
-                        read.reply(&bytes[..len])?;
+                        read.into_inner().reply(&bytes[..len])?;
                         return Ok(());
                     }
 
@@ -765,9 +765,9 @@ impl File {
         }
 
         if response.is_empty() {
-            read.reply(&[])?;
+            read.into_inner().reply(&[])?;
         } else {
-            read.reply_vectored(&response)?;
+            read.into_inner().reply_vectored(&response)?;
         }
         Ok(())
     }
@@ -781,5 +781,43 @@ impl File {
     fn handle_release(&self, release: requests::Release) -> Result<(), Error> {
         self.cache.disable();
         Ok(release.reply()?)
+    }
+}
+
+struct ReadRequest {
+    inner: Option<requests::Read>,
+}
+
+impl Drop for ReadRequest {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            if let Err(err) = inner.fail(libc::EIO) {
+                log::error!("error failing read request: {err}");
+            }
+        }
+    }
+}
+
+impl ReadRequest {
+    fn into_inner(mut self) -> requests::Read {
+        self.inner
+            .take()
+            .expect("invalid use of read request wrapper")
+    }
+}
+
+impl std::ops::Deref for ReadRequest {
+    type Target = requests::Read;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner
+            .as_ref()
+            .expect("invalid use of read request wrapper")
+    }
+}
+
+impl From<requests::Read> for ReadRequest {
+    fn from(inner: requests::Read) -> Self {
+        Self { inner: Some(inner) }
     }
 }
