@@ -6,6 +6,7 @@ use std::ops::Range;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::task::{ready, Context, Poll};
 
 use anyhow::{bail, format_err, Context as _, Error};
@@ -62,6 +63,7 @@ pub struct EsxiClient {
     folder_url: String,
     auth_header: String,
     connection_limit: ConnectionLimit,
+    session_cookie: StdMutex<Option<String>>,
 }
 
 impl EsxiClient {
@@ -80,6 +82,7 @@ impl EsxiClient {
             auth_header: format!("Basic {creds}"),
             client: Client::with_ssl_connector(connector, Default::default()),
             connection_limit: ConnectionLimit::new(),
+            session_cookie: StdMutex::new(None),
         }
     }
 
@@ -94,6 +97,17 @@ impl EsxiClient {
         )
     }
 
+    fn update_cookie(&self, headers: &hyper::HeaderMap) {
+        for cookie in headers.get_all(hyper::header::SET_COOKIE) {
+            let Ok(cookie) = cookie.to_str()
+            else { continue };
+
+            if cookie.starts_with("vmware_soap_session") {
+                *self.session_cookie.lock().unwrap() = Some(cookie.to_string());
+            }
+        }
+    }
+
     async fn make_request<F>(&self, mut make_req: F) -> Result<Response<Body>, Error>
     where
         F: FnMut() -> Result<http::request::Builder, Error>,
@@ -105,7 +119,13 @@ impl EsxiClient {
         loop {
             retry += 1;
 
-            let req = make_req()?
+            let mut req = make_req()?;
+
+            if let Some(cookie) = self.session_cookie.lock().unwrap().as_deref() {
+                req = req.header(hyper::header::COOKIE, cookie);
+            }
+
+            let req = req
                 .header("authorization", &self.auth_header)
                 .body(Body::empty())
                 .context("failed to build http request")?;
@@ -115,6 +135,8 @@ impl EsxiClient {
                 .request(req)
                 .await
                 .context("http request failed")?;
+
+            self.update_cookie(response.headers());
 
             let status = response.status();
             if status.as_u16() == 503 {
