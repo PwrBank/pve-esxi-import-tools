@@ -99,8 +99,9 @@ impl EsxiClient {
 
     fn update_cookie(&self, headers: &hyper::HeaderMap) {
         for cookie in headers.get_all(hyper::header::SET_COOKIE) {
-            let Ok(cookie) = cookie.to_str()
-            else { continue };
+            let Ok(cookie) = cookie.to_str() else {
+                continue
+            };
 
             if cookie.starts_with("vmware_soap_session") {
                 *self.session_cookie.lock().unwrap() = Some(cookie.to_string());
