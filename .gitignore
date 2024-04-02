@@ -1,1 +1,9 @@
+*.build
+*.buildinfo
+*.changes
+*.deb
+*.dsc
+*.tar*
 /target
+Cargo.lock
+pve-esxi-import-tools-[0-9]*/
