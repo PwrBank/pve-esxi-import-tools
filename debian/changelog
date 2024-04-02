@@ -1,3 +1,9 @@
+pve-esxi-import-tools (0.6.1) bookworm; urgency=medium
+
+  * favor session cookie to avoid generating a new one on subsequent requests
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 02 Apr 2024 10:23:49 +0200
+
 pve-esxi-import-tools (0.6.0) bookworm; urgency=medium
 
   * limit async runtime to 2 to 4 worker threads (depending on CPU count) and
