@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::error::Error as StdError;
 use std::fmt;
+use std::future::Future;
 use std::io::IoSlice;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -260,6 +262,14 @@ impl Inode {
                 attr_timeout: TIMEOUT,
                 entry_timeout: TIMEOUT,
             },
+        }
+    }
+
+    fn inode(&self) -> u64 {
+        match self {
+            Self::Datacenter(this) => this.inode,
+            Self::Dir(this) => this.inode,
+            Self::File(this) => this.inode,
         }
     }
 
@@ -539,8 +549,16 @@ pub struct Dir {
     datacenter: String,
     datastore: String,
     path: String,
-    entries: Mutex<BTreeMap<String, u64>>,
-    active_lookups: Mutex<BTreeMap<String, watch::Receiver<Option<u64>>>>,
+    entries: InodeEntries,
+}
+
+impl LookupEntry for Dir {
+    fn lookup_new_entry<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> Pin<Box<(dyn Future<Output = Result<Inode, Error>> + Send + Sync + 'a)>> {
+        Box::pin(self.do_lookup(name))
+    }
 }
 
 impl Dir {
@@ -552,13 +570,13 @@ impl Dir {
         path: String,
     ) -> Self {
         Self {
+            entries: InodeEntries::new(Arc::clone(&fs)),
+
             fs,
             inode,
             datacenter,
             datastore,
             path,
-            entries: Mutex::new(BTreeMap::new()),
-            active_lookups: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -570,41 +588,13 @@ impl Dir {
     }
 
     async fn handle_lookup(&self, name: &str) -> Result<Option<u64>, Error> {
-        let inode = self.entries.lock().unwrap().get(name).copied();
-        Ok(match inode {
-            None => match self.lookup_new(name).await? {
-                None => None,
-                inode => inode,
-            },
-            inode => inode,
-        })
+        self.entries.handle_lookup(name, self).await
     }
 
-    async fn lookup_new(&self, name: &str) -> Result<Option<u64>, Error> {
-        // static analysis does not understand `drop(mutex_guard)`, so this code is ugly
-        // instead...
-
-        let send = 'send: {
-            let mut active = {
-                let mut active_lookups = self.active_lookups.lock().unwrap();
-                match active_lookups.get(name).cloned() {
-                    Some(active) => active,
-                    None => {
-                        let (send, recv) = watch::channel(None);
-                        active_lookups.insert(name.to_string(), recv);
-                        break 'send send;
-                    }
-                }
-            };
-
-            // This will almost always get a RecvError because the sender is immediately dropped,
-            // but that's fine.
-            let _ = active.changed().await;
-            return Ok(*active.borrow());
-        };
-
+    async fn do_lookup(&self, name: &str) -> Result<Inode, Error> {
         let full_path = format!("{}/{name}", self.path);
-        let (inode, entry) = match self
+
+        match self
             .fs
             .client
             .open_file(&self.datacenter, &self.datastore, &full_path)
@@ -613,7 +603,7 @@ impl Dir {
             Ok(file) => {
                 let inode = self.fs.create_inode();
                 let file = Arc::new(File::new(inode, file));
-                (inode, Inode::File(file))
+                Ok(Inode::File(file))
             }
             Err(err) if err.downcast_ref::<IsDirectory>().is_some() => {
                 let inode = self.fs.create_inode();
@@ -624,29 +614,10 @@ impl Dir {
                     self.datastore.clone(),
                     full_path,
                 ));
-                (inode, Inode::Dir(dir))
+                Ok(Inode::Dir(dir))
             }
-            Err(err) if err.downcast_ref::<NotFound>().is_some() => {
-                send.send(None)?;
-                return Ok(None);
-            }
-            Err(err) => {
-                log::error!("error looking up file or directory: {err:?}");
-                return Err(err);
-            }
-        };
-
-        self.fs.inodes.lock().unwrap().insert(inode, entry);
-
-        // we need to hold the entries lock over the active_lookups lock to make sure a negative
-        // entry lookup is not followed by a negative active-lookup lookup by another task.
-        let mut entries = self.entries.lock().unwrap();
-        let mut active_lookups = self.active_lookups.lock().unwrap();
-        entries.insert(name.to_string(), inode);
-        send.send(Some(inode))?;
-        active_lookups.remove(name);
-
-        Ok(Some(inode))
+            Err(other) => Err(other),
+        }
     }
 
     fn stat(&self) -> libc::stat {
@@ -657,7 +628,7 @@ impl Dir {
         let skip = readdir.offset;
         let mut at = 0i64;
 
-        let entries = self.entries.lock().unwrap();
+        let entries = self.entries.entries.lock().unwrap();
         let inodes = self.fs.inodes.lock().unwrap();
         for (name, inode) in entries.iter() {
             let entry = match inodes.get(inode) {
@@ -819,5 +790,97 @@ impl std::ops::Deref for ReadRequest {
 impl From<requests::Read> for ReadRequest {
     fn from(inner: requests::Read) -> Self {
         Self { inner: Some(inner) }
+    }
+}
+
+trait LookupEntry {
+    fn lookup_new_entry<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> Pin<Box<(dyn Future<Output = Result<Inode, Error>> + Send + Sync + 'a)>>;
+}
+
+/// This handles lookups of inodes for entries. Since lookups of yet-unknown entries require
+/// network round trips, this also manages a list of active lookups for the same name, in order to
+/// not cause duplicate network access.
+struct InodeEntries {
+    fs: Arc<FsBase>,
+    entries: Mutex<BTreeMap<String, u64>>,
+    active_lookups: Mutex<BTreeMap<String, watch::Receiver<Option<u64>>>>,
+}
+
+impl InodeEntries {
+    fn new(fs: Arc<FsBase>) -> Self {
+        Self {
+            fs,
+            entries: Mutex::new(BTreeMap::new()),
+            active_lookups: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    async fn handle_lookup<T>(&self, name: &str, lookup: &T) -> Result<Option<u64>, Error>
+    where
+        T: LookupEntry,
+    {
+        let inode = self.entries.lock().unwrap().get(name).copied();
+        Ok(match inode {
+            None => match self.lookup_new(name, lookup).await? {
+                None => None,
+                inode => inode,
+            },
+            inode => inode,
+        })
+    }
+
+    async fn lookup_new<T>(&self, name: &str, lookup: &T) -> Result<Option<u64>, Error>
+    where
+        T: LookupEntry,
+    {
+        // static analysis does not understand `drop(mutex_guard)`, so this code is ugly
+        // instead...
+
+        let send = 'send: {
+            let mut active = {
+                let mut active_lookups = self.active_lookups.lock().unwrap();
+                match active_lookups.get(name).cloned() {
+                    Some(active) => active,
+                    None => {
+                        let (send, recv) = watch::channel(None);
+                        active_lookups.insert(name.to_string(), recv);
+                        break 'send send;
+                    }
+                }
+            };
+
+            // This will almost always get a RecvError because the sender is immediately dropped,
+            // but that's fine.
+            let _ = active.changed().await;
+            return Ok(*active.borrow());
+        };
+
+        let entry = match lookup.lookup_new_entry(name).await {
+            Ok(entry) => entry,
+            Err(err) if err.downcast_ref::<NotFound>().is_some() => {
+                send.send(None)?;
+                return Ok(None);
+            }
+            Err(err) => {
+                log::error!("error looking up file or directory: {err:?}");
+                return Err(err);
+            }
+        };
+
+        let inode = entry.inode();
+        self.fs.inodes.lock().unwrap().insert(inode, entry);
+
+        // we need to hold the entries lock over the active_lookups lock to make sure a negative
+        // entry lookup is not followed by a negative active-lookup lookup by another task.
+        let mut entries = self.entries.lock().unwrap();
+        let mut active_lookups = self.active_lookups.lock().unwrap();
+        entries.insert(name.to_string(), inode);
+        send.send(Some(inode))?;
+        active_lookups.remove(name);
+
+        Ok(Some(inode))
     }
 }
