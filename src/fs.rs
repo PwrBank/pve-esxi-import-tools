@@ -132,6 +132,10 @@ impl Fs {
                 None => None,
                 Some(parent) => match parent.handle_lookup(file_name).await {
                     Ok(res) => res,
+                    Err(err) if err.downcast_ref::<NotFound>().is_some() => {
+                        // treat the same as Errno(ENOENT)
+                        return Ok(lookup.fail(libc::ENOENT)?);
+                    }
                     Err(err) => match err.downcast::<Errno>() {
                         Ok(Errno(err)) => return Ok(lookup.fail(err)?),
                         Err(err) => return Err(err),
