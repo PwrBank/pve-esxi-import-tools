@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Error};
@@ -27,7 +27,7 @@ pub struct Cache {
 
     /// Disabled while the kernel doesn't have any "open" handle to the file, that is an `Open`
     /// fuse request enables the cache, and a `Release` request clears and disables it.
-    enabled: AtomicBool,
+    enabled: AtomicUsize,
 }
 
 impl Cache {
@@ -46,7 +46,7 @@ impl Cache {
             block_mask,
             entries: Mutex::new(LruMap::new(block_count)),
             active_lookups: Mutex::new(BTreeMap::new()),
-            enabled: AtomicBool::new(true),
+            enabled: AtomicUsize::new(0),
         }
     }
 
@@ -54,13 +54,13 @@ impl Cache {
         let mut entries = self.entries.lock().unwrap();
         // The store can be relaxed since we're holding the entries mutex for both reading and
         // writing it which already does a Release when clearing the lock.
-        self.enabled.store(false, Ordering::Relaxed);
+        self.enabled.fetch_sub(1, Ordering::Relaxed);
         self.active_lookups.lock().unwrap().clear();
         entries.clear();
     }
 
     pub fn enable(&self) {
-        self.enabled.store(true, Ordering::Release);
+        self.enabled.fetch_add(1, Ordering::Release);
     }
 
     pub async fn lookup<Fut, F>(&self, offset: u64, fill: F) -> Result<Option<ReadResult>, Error>
@@ -125,7 +125,7 @@ impl Cache {
         if let Some(entry) = &result {
             // The load can be relaxed since we always hold the entries mutex accessing this and it
             // does an Acquire already.
-            if self.enabled.load(Ordering::Relaxed) {
+            if self.enabled.load(Ordering::Relaxed) > 0 {
                 entries.insert(block_offset, Arc::clone(entry));
             }
         }
