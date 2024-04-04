@@ -852,7 +852,7 @@ impl InodeEntries {
         let mut entries = self.entries.lock().unwrap();
         let mut active_lookups = self.active_lookups.lock().unwrap();
         entries.insert(name.to_string(), inode);
-        send.send(Some(inode))?;
+        send.send_replace(Some(inode));
         active_lookups.remove(name);
 
         Ok(Some(inode))

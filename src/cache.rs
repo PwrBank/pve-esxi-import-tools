@@ -129,7 +129,7 @@ impl Cache {
                 entries.insert(block_offset, Arc::clone(entry));
             }
         }
-        send.send(result.clone())?;
+        send.send_replace(result.clone());
         active_lookups.remove(&block_offset);
 
         Ok(result)
