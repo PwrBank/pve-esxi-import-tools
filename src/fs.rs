@@ -17,6 +17,7 @@ use crate::cache::Cache;
 use crate::esxi::{EsxiClient, EsxiFile, IsDirectory, NotFound};
 
 const TIMEOUT: f64 = 600.0;
+const FIRST_INODE: u64 = 3;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Errno(libc::c_int);
@@ -58,10 +59,13 @@ struct FsBase {
 
 impl FsBase {
     fn new(client: Arc<EsxiClient>) -> Arc<Self> {
+        let mut inodes = BTreeMap::new();
+        inodes.insert(version_file::INODE, Inode::Version);
+
         Arc::new(Self {
             client,
-            inodes: Mutex::new(BTreeMap::new()),
-            current_inode: AtomicU64::new(2),
+            inodes: Mutex::new(inodes),
+            current_inode: AtomicU64::new(FIRST_INODE),
         })
     }
 
@@ -235,8 +239,64 @@ impl Fs {
     }
 }
 
+mod version_file {
+    use anyhow::Error;
+
+    use proxmox_fuse::requests;
+
+    pub const INODE: u64 = 2;
+    pub const CONTENT: &str = concat!(
+        env!("CARGO_PKG_VERSION_MAJOR"),
+        ".",
+        env!("CARGO_PKG_VERSION_MINOR"),
+        ".",
+        env!("CARGO_PKG_VERSION_PATCH"),
+        "\n",
+        env!("REPOID"),
+        "\n",
+    );
+
+    pub fn stat() -> libc::stat {
+        log::error!("STAT ON VERSION?");
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+
+        stat.st_ino = INODE;
+        stat.st_nlink = 1;
+        stat.st_mode = 0o444 | libc::S_IFREG;
+        stat.st_size = CONTENT.len() as _;
+
+        stat
+    }
+
+    pub fn open(open: requests::Open) -> Result<(), Error> {
+        open.reply(0)?;
+        Ok(())
+    }
+
+    pub fn release(release: requests::Release) -> Result<(), Error> {
+        release.reply()?;
+        Ok(())
+    }
+
+    pub(super) fn read(read: super::ReadRequest) -> Result<(), Error> {
+        let read = read.into_inner();
+
+        let beg = read.offset as usize;
+        if beg >= CONTENT.len() {
+            read.reply(&[])?;
+            return Ok(());
+        }
+
+        let end = beg.saturating_add(read.size as usize).min(CONTENT.len());
+
+        read.reply(&CONTENT.as_bytes()[beg..end])?;
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub enum Inode {
+    Version,
     Datacenter(Arc<Datacenter>),
     Dir(Arc<Dir>),
     File(Arc<File>),
@@ -245,6 +305,13 @@ pub enum Inode {
 impl Inode {
     fn entry_param(&self) -> proxmox_fuse::EntryParam {
         match self {
+            Self::Version => proxmox_fuse::EntryParam {
+                inode: version_file::INODE,
+                generation: 1,
+                attr: version_file::stat(),
+                attr_timeout: TIMEOUT,
+                entry_timeout: TIMEOUT,
+            },
             Self::Datacenter(dir) => proxmox_fuse::EntryParam {
                 inode: dir.inode,
                 generation: 1,
@@ -271,6 +338,7 @@ impl Inode {
 
     fn inode(&self) -> u64 {
         match self {
+            Self::Version => version_file::INODE,
             Self::Datacenter(this) => this.inode,
             Self::Dir(this) => this.inode,
             Self::File(this) => this.inode,
@@ -279,6 +347,7 @@ impl Inode {
 
     fn stat(&self) -> libc::stat {
         match self {
+            Self::Version => version_file::stat(),
             Self::Datacenter(dir) => dir.stat(),
             Self::Dir(dir) => dir.stat(),
             Self::File(file) => file.stat(),
@@ -287,6 +356,7 @@ impl Inode {
 
     async fn handle_lookup(&self, name: &str) -> Result<Option<u64>, Error> {
         Ok(match self {
+            Self::Version => Some(version_file::INODE),
             Self::Datacenter(dc) => dc.handle_lookup(name).await?,
             Self::Dir(dir) => dir.handle_lookup(name).await?,
             Self::File(_) => return Err(Errno(libc::ENOTDIR).into()),
@@ -295,6 +365,7 @@ impl Inode {
 
     fn handle_readdir(&self, readdir: requests::ReaddirPlus) -> Result<(), Error> {
         match self {
+            Self::Version => Ok(readdir.fail(libc::ENOTDIR)?),
             Self::Datacenter(dc) => dc.handle_readdir(readdir),
             Self::Dir(dir) => dir.handle_readdir(readdir),
             Self::File(_) => Ok(readdir.fail(libc::ENOTDIR)?),
@@ -303,6 +374,7 @@ impl Inode {
 
     async fn handle_read(&self, read: ReadRequest) -> Result<(), Error> {
         match self {
+            Self::Version => version_file::read(read),
             Self::Datacenter(_) => Ok(read.into_inner().fail(libc::EISDIR)?),
             Self::Dir(_) => Ok(read.into_inner().fail(libc::EISDIR)?),
             Self::File(file) => file.handle_read(read).await,
@@ -311,6 +383,7 @@ impl Inode {
 
     fn handle_open(&self, open: requests::Open) -> Result<(), Error> {
         match self {
+            Self::Version => version_file::open(open),
             Self::Datacenter(entry) => entry.handle_open(open),
             Self::Dir(entry) => entry.handle_open(open),
             Self::File(entry) => entry.handle_open(open),
@@ -319,6 +392,7 @@ impl Inode {
 
     fn handle_release(&self, release: requests::Release) -> Result<(), Error> {
         match self {
+            Self::Version => version_file::release(release),
             Self::Datacenter(entry) => entry.handle_release(release),
             Self::Dir(entry) => entry.handle_release(release),
             Self::File(entry) => entry.handle_release(release),
@@ -368,6 +442,10 @@ impl Root {
     }
 
     fn handle_lookup(&self, name: &str) -> Option<u64> {
+        if name == ".version" {
+            return Some(version_file::INODE);
+        }
+
         self.datacenters.lock().unwrap().get(name).copied()
     }
 
@@ -386,19 +464,44 @@ impl Root {
     fn handle_readdir(&self, mut readdir: requests::ReaddirPlus) -> Result<(), Error> {
         let datacenters = self.datacenters.lock().unwrap();
 
-        for (count, (name, inode)) in datacenters.iter().skip(readdir.offset as usize).enumerate() {
-            if readdir
-                .add_entry(
-                    name.as_ref(),
-                    &dir_stat(*inode),
-                    readdir.offset as isize + count as isize + 1,
-                    1,
-                    TIMEOUT,
-                    TIMEOUT,
-                )?
-                .is_full()
+        'full: {
+            let mut fixed_count = 0usize;
+
+            if readdir.offset == 0 {
+                fixed_count += 1;
+                if readdir
+                    .add_entry(
+                        ".version".as_ref(),
+                        &version_file::stat(),
+                        fixed_count as isize,
+                        1,
+                        TIMEOUT,
+                        TIMEOUT,
+                    )?
+                    .is_full()
+                {
+                    break 'full;
+                }
+            }
+
+            for (count, (name, inode)) in datacenters
+                .iter()
+                .skip((readdir.offset as usize).saturating_sub(fixed_count))
+                .enumerate()
             {
-                break;
+                if readdir
+                    .add_entry(
+                        name.as_ref(),
+                        &dir_stat(*inode),
+                        readdir.offset as isize + count as isize + fixed_count as isize,
+                        1,
+                        TIMEOUT,
+                        TIMEOUT,
+                    )?
+                    .is_full()
+                {
+                    break 'full;
+                }
             }
         }
 
