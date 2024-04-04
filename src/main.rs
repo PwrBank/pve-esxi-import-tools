@@ -57,6 +57,8 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
           --change-group=UID          change to the provided group after mounting\n  \
           --ready-fd=FDNUM            close file descriptor FDNUM when ready\n  \
           --skip-cert-verification    disable certificate verification\n\
+          -v, --version               print the version and exit\n\
+          -h, --help                  print this usage help and exit\n\
         "
     );
 
@@ -107,11 +109,19 @@ impl Args {
     }
 }
 
-fn parse_args() -> Result<Args, Error> {
+fn parse_args() -> Result<Option<Args>, Error> {
     let mut log_filter_level = None;
 
     let mut argparse = pico_args::Arguments::from_env();
     let mut args = Args::default();
+
+    if argparse.contains(["-h", "--help"]) {
+        return Ok(None); // main_do fn handles usage outputs as it knows arg0
+    }
+    if argparse.contains(["-v", "--version"]) {
+        println!(env!("CARGO_PKG_VERSION"));
+        std::process::exit(0);
+    }
 
     if let Some(value) = argparse.opt_value_from_os_str("-o", |os| Ok::<_, Error>(os.to_owned()))? {
         args.mount_options.push(value);
@@ -186,7 +196,7 @@ fn parse_args() -> Result<Args, Error> {
 
     args.parse_vec(argparse.finish())?;
 
-    Ok(args)
+    Ok(Some(args))
 }
 
 fn parse_manifest(manifest_path: &OsStr) -> Result<(), Error> {
@@ -219,7 +229,8 @@ fn main() {
 async fn main_do() -> Result<(), Error> {
     let arg0 = std::env::args_os().next().unwrap();
     let args = match parse_args() {
-        Ok(args) => args,
+        Ok(Some(args)) => args,
+        Ok(None) => usage(&arg0, std::io::stdout(), 0),
         Err(err) => {
             eprintln!("error: {err}");
             usage(&arg0, std::io::stderr(), 1);
