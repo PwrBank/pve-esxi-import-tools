@@ -245,16 +245,7 @@ mod version_file {
     use proxmox_fuse::requests;
 
     pub const INODE: u64 = 2;
-    pub const CONTENT: &str = concat!(
-        env!("CARGO_PKG_VERSION_MAJOR"),
-        ".",
-        env!("CARGO_PKG_VERSION_MINOR"),
-        ".",
-        env!("CARGO_PKG_VERSION_PATCH"),
-        "\n",
-        env!("REPOID"),
-        "\n",
-    );
+    pub const CONTENT: &str = concat!(env!("CARGO_PKG_VERSION"), "\n");
 
     pub fn stat() -> libc::stat {
         log::error!("STAT ON VERSION?");
