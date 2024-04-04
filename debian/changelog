@@ -1,3 +1,21 @@
+pve-esxi-import-tools (0.7.0) bookworm; urgency=medium
+
+  * add a reference count to the cache enable state so that it doesn't get
+    disabled to early in some use cases, which would cause slow-downs.
+
+  * improve handling one errors in a set of parallel reads from the same
+    file+block combination that is not yet in the cache. These parallel
+    accesses are synchronised, but it seems that an error caused tokio to
+    close the channels even though we tried already to avoid that.
+
+  * add a .version file to the root of the fuse mount so that one can more
+    easily check if they are currently using the latest version, or if they
+    require a "disable & re-enable" cycle of the ESXi storage.
+
+  * add help and version flags as long and short command-line options
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 04 Apr 2024 18:18:42 +0200
+
 pve-esxi-import-tools (0.6.1) bookworm; urgency=medium
 
   * favor session cookie to avoid generating a new one on subsequent requests
