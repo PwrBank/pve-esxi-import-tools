@@ -56,8 +56,8 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
           --change-user=UID           change to the provided user after mounting\n  \
           --change-group=UID          change to the provided group after mounting\n  \
           --ready-fd=FDNUM            close file descriptor FDNUM when ready\n  \
-          --skip-cert-verification    disable certificate verification\n\
-          -v, --version               print the version and exit\n\
+          --skip-cert-verification    disable certificate verification\n  \
+          -v, --version               print the version and exit\n  \
           -h, --help                  print this usage help and exit\n\
         "
     );
