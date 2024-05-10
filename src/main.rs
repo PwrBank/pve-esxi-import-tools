@@ -1,4 +1,5 @@
 use std::ffi::{CString, OsStr, OsString};
+use std::fmt::Write;
 use std::io;
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
@@ -221,7 +222,12 @@ fn main() {
     });
 
     if let Err(err) = runtime.block_on(main_do()) {
-        eprintln!("Error: {}", err);
+        let mut err_chain = String::new();
+        for err in err.chain() {
+            let _ = writeln!(err_chain, " {err}");
+        }
+        eprintln!("Error: {err}");
+        log::error!("Error:{err_chain}");
         std::process::exit(-1);
     }
 }
@@ -302,9 +308,10 @@ async fn main_do() -> Result<(), Error> {
             let fs_datastore = fs_datacenter.create_datastore(datastore);
 
             log::debug!("loading {datacenter:?}/{datastore:?}/{path:?}");
-            let config =
-                vmx::VmConfig::parse(client.open_file(datacenter, datastore, path).await?, path)
-                    .await?;
+            let config = client.open_file(datacenter, datastore, path).await?;
+            let config = vmx::VmConfig::parse(config, path).await.with_context(|| {
+                format!("error when parsing VM config: {datacenter:?}/{datastore:?}/{path:?}")
+            })?;
             log::debug!("{config:#?}");
             for disk in config.disks.values() {
                 let other_fs_datastore;
