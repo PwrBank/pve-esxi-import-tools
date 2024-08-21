@@ -6,7 +6,7 @@ use regex::Regex;
 use tokio::io::AsyncRead;
 
 static DISK_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"^((?:scsi|ide|sata|nvme)\d+:\d+)\.fileName$"#)
+    Regex::new(r#"^((?:scsi|ide|sata|nvme)\d+:\d+)\.file[nN]ame$"#)
         .expect("failed to create disk key regex")
 });
 
