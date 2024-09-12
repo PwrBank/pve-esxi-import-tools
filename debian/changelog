@@ -1,3 +1,9 @@
+pve-esxi-import-tools (0.7.2) bookworm; urgency=medium
+
+  * fix #5587: add support for older version of vmx storage filepaths
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 12 Sep 2024 12:26:58 +0200
+
 pve-esxi-import-tools (0.7.1) bookworm; urgency=medium
 
   * make errors before mounting more visible
