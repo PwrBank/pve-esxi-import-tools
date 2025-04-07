@@ -265,6 +265,12 @@ def main():
     with connect_to_esxi_host(connection_args) as connection:
         data = {}
         for vm in list_vms(connection):
+            # skip vms with empty datastore_name
+            datastore_name, relative_vmx_path = parse_file_path(
+                vm.config.files.vmPathName
+            )
+            if not datastore_name:
+                continue
             try:
                 fetch_and_update_vm_data(vm, data)
             except Exception as err:
