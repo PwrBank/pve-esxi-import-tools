@@ -265,11 +265,19 @@ def main():
     with connect_to_esxi_host(connection_args) as connection:
         data = {}
         for vm in list_vms(connection):
-            # skip vms with empty datastore_name
+            # drop vCLS machines
+            vCLS = any(cfg.key == "HDCS.agent"
+                       and cfg.value.lower() == "true"
+                       for cfg in vm.config.extraConfig)
+            if vCLS:
+                continue
+            # drop vms with empty datastore
             datastore_name, relative_vmx_path = parse_file_path(
                 vm.config.files.vmPathName
             )
             if not datastore_name:
+                print(f"Skipping VM (no datastore value): {vm.name}",
+                      file=sys.stderr)
                 continue
             try:
                 fetch_and_update_vm_data(vm, data)
