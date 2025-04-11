@@ -251,6 +251,20 @@ def fetch_and_update_vm_data(vm: vim.VirtualMachine, data: dict[Any, Any]):
     datastores.update({ds.name: ds.url for ds in vm.config.datastoreUrl})
 
 
+def is_vcls_agent_vm(vm: vim.VirtualMachine) -> bool:
+    # older ESXi installations seem to not expose the vm config
+    if vm.config is not None:
+        return False
+
+    return any(cfg.key == "HDCS.agent"
+               and cfg.value.lower() == "true"
+               for cfg in vm.config.extraConfig)
+
+def is_diskless_vm(vm: vim.VirtualMachine) -> bool:
+    datastore_name, _ = parse_file_path(vm.config.files.vmPathName)
+
+    return not datastore_name
+
 def main():
     args = parse_args()
 
@@ -266,20 +280,12 @@ def main():
         data = {}
         for vm in list_vms(connection):
             # drop vCLS machines
-            vCLS = vm.config is not None and any(
-                cfg.key == "HDCS.agent"
-                and cfg.value.lower() == "true"
-                for cfg in vm.config.extraConfig
-            )
-            if vCLS:
+            if is_vcls_agent_vm(vm):
+                print(f"Skipping vCLS agent VM: {vm.name}", file=sys.stderr)
                 continue
             # drop vms with empty datastore
-            datastore_name, relative_vmx_path = parse_file_path(
-                vm.config.files.vmPathName
-            )
-            if not datastore_name:
-                print(f"Skipping VM (no datastore value): {vm.name}",
-                      file=sys.stderr)
+            if is_diskless_vm(vm):
+                print(f"Skipping diskless VM: {vm.name}", file=sys.stderr)
                 continue
             try:
                 fetch_and_update_vm_data(vm, data)
