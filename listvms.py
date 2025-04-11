@@ -266,9 +266,11 @@ def main():
         data = {}
         for vm in list_vms(connection):
             # drop vCLS machines
-            vCLS = any(cfg.key == "HDCS.agent"
-                       and cfg.value.lower() == "true"
-                       for cfg in vm.config.extraConfig)
+            vCLS = vm.config is not None and any(
+                cfg.key == "HDCS.agent"
+                and cfg.value.lower() == "true"
+                for cfg in vm.config.extraConfig
+            )
             if vCLS:
                 continue
             # drop vms with empty datastore
