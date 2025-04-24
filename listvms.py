@@ -253,7 +253,7 @@ def fetch_and_update_vm_data(vm: vim.VirtualMachine, data: dict[Any, Any]):
 
 def is_vcls_agent_vm(vm: vim.VirtualMachine) -> bool:
     # older ESXi installations seem to not expose the vm config
-    if vm.config is not None:
+    if vm.config is None:
         return False
 
     return any(cfg.key == "HDCS.agent"
