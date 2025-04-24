@@ -1,3 +1,11 @@
+pve-esxi-import-tools (0.7.4) bookworm; urgency=medium
+
+  * fix #6347: unbreak VM-listing when connecting to older ESXi hosts
+
+  * log when skipping a VM without any disks configured.
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 24 Apr 2025 14:24:19 +0200
+
 pve-esxi-import-tools (0.7.3) bookworm; urgency=medium
 
   * exclude VMs without datastore_name in manifest.json (such as vCLS
