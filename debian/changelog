@@ -1,3 +1,11 @@
+pve-esxi-import-tools (1.0.0) trixie; urgency=medium
+
+  * update to hyper 1.0
+
+  * re-build for Debian Trixie based releases.
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 13 Jun 2025 12:00:35 +0200
+
 pve-esxi-import-tools (0.7.4) bookworm; urgency=medium
 
   * fix #6347: unbreak VM-listing when connecting to older ESXi hosts
