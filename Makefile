@@ -77,8 +77,7 @@ deb:
 	rm -rf $(BUILD_DIR)
 	$(MAKE) $(OUTPUT_DIR)$(DEB)
 
-$(OUTPUT_DIR)$(DEB_DBGSYM): $(OUTPUT_DIR)$(DEB)
-$(OUTPUT_DIR)$(DEB): $(BUILD_DIR)
+$(OUTPUT_DIR)$(DEB) $(OUTPUT_DIR)$(DEB_DBGSYM) &: $(BUILD_DIR)
 	cd $(BUILD_DIR) && dpkg-buildpackage -b -uc -us
 	lintian $@
 
