@@ -142,7 +142,7 @@ def json_dump_helper(obj: Any) -> Any:
     Raises:
         TypeError: If the conversion of the object is not supported.
     """
-    if dataclasses.is_dataclass(obj):
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return dataclasses.asdict(obj)
 
     raise TypeError(
