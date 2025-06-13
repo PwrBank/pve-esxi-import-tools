@@ -5,6 +5,7 @@ use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use anyhow::{bail, format_err, Context as _, Error};
 use futures::stream::StreamExt;
@@ -24,7 +25,7 @@ use fs::Inode;
 
 static mut FILE_CACHE_PAGE_SIZE: u64 = 32 << 20;
 static mut FILE_CACHE_PAGE_COUNT: usize = 8;
-static mut MANIFEST: Option<manifest::Manifest> = None;
+static MANIFEST: OnceLock<manifest::Manifest> = OnceLock::new();
 
 pub fn file_cache_page_size() -> u64 {
     unsafe { FILE_CACHE_PAGE_SIZE }
@@ -36,7 +37,7 @@ pub fn file_cache_page_count() -> usize {
 
 /// gets filled immediately after argument parsing and will be used throughout
 pub fn manifest() -> &'static manifest::Manifest {
-    unsafe { MANIFEST.as_ref().unwrap() }
+    unsafe { MANIFEST.get().unwrap_unchecked() }
 }
 
 fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
@@ -204,9 +205,7 @@ fn parse_manifest(manifest_path: &OsStr) -> Result<(), Error> {
     let data = std::fs::read(manifest_path).context("failed to read manifest")?;
 
     let manifest = serde_json::from_slice(&data).context("failed to parse manifest")?;
-    unsafe {
-        MANIFEST = Some(manifest);
-    }
+    MANIFEST.set(manifest).expect("failed to set manifest");
 
     Ok(())
 }

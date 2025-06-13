@@ -11,8 +11,8 @@ use std::task::{ready, Context, Poll};
 
 use anyhow::{bail, format_err, Context as _, Error};
 use http::{Request, Response};
+use http_body_util::BodyExt;
 use hyper::body::Bytes;
-use hyper::Body;
 use openssl::ssl::SslConnector;
 use percent_encoding::{percent_encode, AsciiSet};
 use tokio::io::AsyncRead;
@@ -21,6 +21,7 @@ use tokio::task::JoinHandle;
 use tokio::sync::SemaphorePermit;
 
 use proxmox_http::client::Client;
+use proxmox_http::Body;
 
 #[derive(Clone, Copy, Debug)]
 pub struct NotFound;
@@ -100,7 +101,7 @@ impl EsxiClient {
     fn update_cookie(&self, headers: &hyper::HeaderMap) {
         for cookie in headers.get_all(hyper::header::SET_COOKIE) {
             let Ok(cookie) = cookie.to_str() else {
-                continue
+                continue;
             };
 
             if cookie.starts_with("vmware_soap_session") {
@@ -123,7 +124,7 @@ impl EsxiClient {
             let mut req = make_req()?;
 
             if let Some(cookie) = self.session_cookie.lock().unwrap().as_deref() {
-                req = req.header(hyper::header::COOKIE, cookie);
+                req = req.header(http::header::COOKIE, cookie);
             }
 
             let req = req
@@ -153,7 +154,7 @@ impl EsxiClient {
                     continue;
                 }
 
-                log::error!("rate limited => {response:?}");
+                log::error!("rate limited");
                 bail!("rate limited");
             }
 
@@ -215,7 +216,7 @@ impl EsxiClient {
             })
             .and_then(|value| value.parse().ok());
 
-        let body = hyper::body::to_bytes(body).await?;
+        let body = body.collect().await?.to_bytes();
 
         Ok((body, file_size))
     }
