@@ -162,14 +162,29 @@ def get_datacenter_of_vm(vm: vim.VirtualMachine) -> vim.Datacenter | None:
 
 def list_vms(service_instance: vim.ServiceInstance) -> list[vim.VirtualMachine]:
     """List all VMs on the ESXi/vCenter server."""
-    content = service_instance.content
-    vm_view: Any = content.viewManager.CreateContainerView(
+
+    content: vim.ServiceInstanceContent | None = service_instance.content
+
+    if content is None:
+        return []
+
+    view_manager: vim.view.ViewManager | None = content.viewManager
+
+    if view_manager is None:
+        return []
+
+    vm_view = view_manager.CreateContainerView(
         content.rootFolder,
         [vim.VirtualMachine],
         True,
     )
+
+    if vm_view is None:
+        return []
+
     vms = vm_view.view
     vm_view.Destroy()
+
     return vms
 
 
@@ -180,23 +195,42 @@ def parse_file_path(path) -> tuple[str, str]:
     return (datastore_name, relative_path)
 
 
-def get_vm_vmx_info(vm: vim.VirtualMachine) -> VmVmxInfo:
+def get_vm_vmx_info(vm: vim.VirtualMachine) -> VmVmxInfo | None:
     """Extract VMX file path and checksum from a VM object."""
-    datastore_name, relative_vmx_path = parse_file_path(
-        vm.config.files.vmPathName
+
+    config: vim.vm.ConfigInfo | None = vm.config
+
+    if config is None:
+        return None
+
+    files: vim.vm.FileInfo | None = config.files
+
+    if files is None:
+        return None
+
+    vm_path_name: str | None = files.vmPathName
+
+    if vm_path_name is None:
+        return None
+
+    datastore_name, relative_vmx_path = parse_file_path(vm_path_name)
+    checksum = (
+        config.vmxConfigChecksum.hex() if config.vmxConfigChecksum else "N/A"
     )
 
     return VmVmxInfo(
         datastore=datastore_name,
         path=relative_vmx_path,
-        checksum=vm.config.vmxConfigChecksum.hex()
-        if vm.config.vmxConfigChecksum
-        else "N/A",
+        checksum=checksum,
     )
 
 
 def get_vm_disk_info(vm: vim.VirtualMachine) -> list[VmDiskInfo]:
-    disks = []
+    disks: list[VmDiskInfo] = []
+
+    if vm.config is None:
+        return disks
+
     for device in vm.config.hardware.device:
         if isinstance(device, vim.vm.device.VirtualDisk):
             try:
@@ -217,12 +251,27 @@ def get_all_datacenters(
     service_instance: vim.ServiceInstance,
 ) -> list[vim.Datacenter]:
     """Retrieve all datacenters from the ESXi/vCenter server."""
-    content = service_instance.content
-    dc_view: Any = content.viewManager.CreateContainerView(
+
+    content: vim.ServiceInstanceContent | None = service_instance.content
+
+    if content is None:
+        return []
+
+    view_manager: vim.view.ViewManager | None = content.viewManager
+
+    if view_manager is None:
+        return []
+
+    dc_view = view_manager.CreateContainerView(
         content.rootFolder, [vim.Datacenter], True
     )
+
+    if dc_view is None:
+        return []
+
     datacenters = dc_view.view
     dc_view.Destroy()
+
     return datacenters
 
 
@@ -242,13 +291,28 @@ def fetch_and_update_vm_data(vm: vim.VirtualMachine, data: dict[Any, Any]):
     vms = data[datacenter.name].setdefault("vms", {})
     datastores = data[datacenter.name].setdefault("datastores", {})
 
+    config: vim.vm.ConfigInfo | None = vm.config
+
+    if config is None:
+        return
+
+    vm_vmx_info: VmVmxInfo | None = get_vm_vmx_info(vm)
+
+    if vm_vmx_info is None:
+        return
+
+    runtime: vim.vm.RuntimeInfo | None = vm.runtime
+
+    if runtime is None:
+        return
+
     vms[vm.name] = VmInfo(
-        config=get_vm_vmx_info(vm),
+        config=vm_vmx_info,
         disks=get_vm_disk_info(vm),
-        power=str(vm.runtime.powerState),
+        power=str(runtime.powerState),
     )
 
-    datastores.update({ds.name: ds.url for ds in vm.config.datastoreUrl})
+    datastores.update({ds.name: ds.url for ds in config.datastoreUrl})
 
 
 def is_vcls_agent_vm(vm: vim.VirtualMachine) -> bool:
@@ -261,6 +325,9 @@ def is_vcls_agent_vm(vm: vim.VirtualMachine) -> bool:
                for cfg in vm.config.extraConfig)
 
 def is_diskless_vm(vm: vim.VirtualMachine) -> bool:
+    if vm.config is None or vm.config.files is None:
+        return True
+
     datastore_name, _ = parse_file_path(vm.config.files.vmPathName)
 
     return not datastore_name
