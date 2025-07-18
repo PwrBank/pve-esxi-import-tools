@@ -31,9 +31,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--port",
         type=int,
-        metavar='PORT',
+        metavar="PORT",
         default=443,
-        help="Use a port other than 443."
+        help="Use a port other than 443.",
     )
 
     parser.add_argument(
@@ -320,9 +320,11 @@ def is_vcls_agent_vm(vm: vim.VirtualMachine) -> bool:
     if vm.config is None:
         return False
 
-    return any(cfg.key == "HDCS.agent"
-               and cfg.value.lower() == "true"
-               for cfg in vm.config.extraConfig)
+    return any(
+        cfg.key == "HDCS.agent" and cfg.value.lower() == "true"
+        for cfg in vm.config.extraConfig
+    )
+
 
 def is_diskless_vm(vm: vim.VirtualMachine) -> bool:
     if vm.config is None or vm.config.files is None:
@@ -331,6 +333,7 @@ def is_diskless_vm(vm: vim.VirtualMachine) -> bool:
     datastore_name, _ = parse_file_path(vm.config.files.vmPathName)
 
     return not datastore_name
+
 
 def main():
     args = parse_args()
