@@ -38,6 +38,7 @@ Build-Depends: cargo:native (>= 0.65.0~),
                librust-tokio-1+time-dev,
                libstd-rust-dev,
                mypy,
+               python3-pyvmomi (>= 8),
                rustc:native,
 Maintainer: Proxmox Support Team <support@proxmox.com>
 Standards-Version: 4.6.2
