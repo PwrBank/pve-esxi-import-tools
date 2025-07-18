@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
 
 
 @dataclass
-class EsxiConnectonArgs:
+class EsxiConnectionArgs:
     hostname: str
     port: int
     username: str
@@ -66,7 +66,7 @@ class EsxiConnectonArgs:
 
 @contextmanager
 def connect_to_esxi_host(
-    args: EsxiConnectonArgs,
+    args: EsxiConnectionArgs,
 ) -> Generator[vim.ServiceInstance, None, None]:
     """Opens a connection to an ESXi host with the given username and password
     contained in the password file.
@@ -335,7 +335,7 @@ def is_diskless_vm(vm: vim.VirtualMachine) -> bool:
 def main():
     args = parse_args()
 
-    connection_args = EsxiConnectonArgs(
+    connection_args = EsxiConnectionArgs(
         hostname=args.hostname,
         port=args.port,
         username=args.username,
