@@ -279,14 +279,23 @@ def main():
     with connect_to_esxi_host(connection_args) as connection:
         data = {}
         for vm in list_vms(connection):
-            # drop vCLS machines
-            if is_vcls_agent_vm(vm):
-                print(f"Skipping vCLS agent VM: {vm.name}", file=sys.stderr)
+            # If figuring out any of this fails, we just skip...
+            try:
+                # drop vCLS machines
+                if is_vcls_agent_vm(vm):
+                    print(f"Skipping vCLS agent VM: {vm.name}", file=sys.stderr)
+                    continue
+                # drop vms with empty datastore
+                if is_diskless_vm(vm):
+                    print(f"Skipping diskless VM: {vm.name}", file=sys.stderr)
+                    continue
+            except Exception as err:
+                print(
+                    f"Unexpected error trying to look at VM {vm.name}: {err}",
+                    file=sys.stderr,
+                )
                 continue
-            # drop vms with empty datastore
-            if is_diskless_vm(vm):
-                print(f"Skipping diskless VM: {vm.name}", file=sys.stderr)
-                continue
+
             try:
                 fetch_and_update_vm_data(vm, data)
             except Exception as err:
