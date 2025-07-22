@@ -32,4 +32,4 @@ tokio = { version = "1", features = [ "macros", "rt-multi-thread", "time" ] }
 
 proxmox-async = "0.5"
 proxmox-fuse = "1"
-proxmox-http = { version = "1", features = [ "body", "client" ] }
+proxmox-http = { version = "1.0.1", features = [ "body", "client" ] }
