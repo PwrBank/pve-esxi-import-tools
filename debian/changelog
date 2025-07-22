@@ -1,3 +1,12 @@
+pve-esxi-import-tools (1.0.1) trixie; urgency=medium
+
+  * skip VMs we cannot parse or are in a bad state gradually instead of
+    failing the whole list VM invocation.
+
+  * require proxmox-http >= 1.0.1 to ensure we got HTTP2 support available.
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 22 Jul 2025 17:25:46 +0200
+
 pve-esxi-import-tools (1.0.0) trixie; urgency=medium
 
   * update to hyper 1.0
