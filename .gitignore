@@ -8,3 +8,5 @@
 Cargo.lock
 pve-esxi-import-tools-[0-9]*/
 .lint-incremental
+.claude/settings.local.json
+.gitignore

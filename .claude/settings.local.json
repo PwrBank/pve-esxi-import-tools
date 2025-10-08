@@ -5,7 +5,12 @@
       "Bash(ssh root@10.10.5.69 \"hostname && pveversion\")",
       "Bash(test:*)",
       "Bash(ssh-keygen:*)",
-      "Bash(ssh-copy-id:*)"
+      "Bash(ssh-copy-id:*)",
+      "Bash(cargo build:*)",
+      "Bash(ssh:*)",
+      "Bash(rsync:*)",
+      "Bash(scp:*)",
+      "Read(//c/Users/mneuforth/.ssh/**)"
     ],
     "deny": [],
     "ask": []
