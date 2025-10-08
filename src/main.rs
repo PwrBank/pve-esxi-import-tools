@@ -23,8 +23,8 @@ mod vmx;
 use esxi::EsxiClient;
 use fs::Inode;
 
-static mut FILE_CACHE_PAGE_SIZE: u64 = 32 << 20;
-static mut FILE_CACHE_PAGE_COUNT: usize = 8;
+static mut FILE_CACHE_PAGE_SIZE: u64 = 128 << 20;
+static mut FILE_CACHE_PAGE_COUNT: usize = 16;
 static MANIFEST: OnceLock<manifest::Manifest> = OnceLock::new();
 
 pub fn file_cache_page_size() -> u64 {

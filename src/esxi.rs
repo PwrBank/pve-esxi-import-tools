@@ -411,7 +411,7 @@ struct ConnectionLimit {
 impl ConnectionLimit {
     fn new() -> Self {
         Self {
-            requests: tokio::sync::Semaphore::new(4),
+            requests: tokio::sync::Semaphore::new(16),
             retry: tokio::sync::Mutex::new(()),
         }
     }
