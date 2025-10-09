@@ -14,7 +14,7 @@ use proxmox_fuse::requests::{self, FuseRequest};
 use proxmox_fuse::{Request, ROOT_ID};
 
 use crate::cache::Cache;
-use crate::esxi::{EsxiClient, EsxiFile, IsDirectory, NotFound};
+use crate::esxi::{EsxiClientPool, EsxiFile, IsDirectory, NotFound};
 
 const TIMEOUT: f64 = 600.0;
 const FIRST_INODE: u64 = 3;
@@ -52,13 +52,13 @@ fn dir_stat(inode: u64) -> libc::stat {
 }
 
 struct FsBase {
-    client: Arc<EsxiClient>,
+    client: Arc<EsxiClientPool>,
     inodes: Mutex<BTreeMap<u64, Inode>>,
     current_inode: AtomicU64,
 }
 
 impl FsBase {
-    fn new(client: Arc<EsxiClient>) -> Arc<Self> {
+    fn new(client: Arc<EsxiClientPool>) -> Arc<Self> {
         let mut inodes = BTreeMap::new();
         inodes.insert(version_file::INODE, Inode::Version);
 
@@ -80,7 +80,7 @@ pub struct Fs {
 }
 
 impl Fs {
-    pub fn new(client: Arc<EsxiClient>) -> Arc<Self> {
+    pub fn new(client: Arc<EsxiClientPool>) -> Arc<Self> {
         let fs = FsBase::new(client);
         Arc::new(Self {
             root: Root::new(Arc::clone(&fs)),

@@ -20,7 +20,6 @@ mod fs;
 mod manifest;
 mod vmx;
 
-use esxi::EsxiClient;
 use fs::Inode;
 
 static mut FILE_CACHE_PAGE_SIZE: u64 = 128 << 20;
@@ -290,11 +289,14 @@ async fn main_do() -> Result<(), Error> {
         .context("failed to configure alpn protocols")?;
     let connector = connector.build();
 
-    let client = Arc::new(EsxiClient::new(
+    // Create a pool of 8 HTTP clients, each with its own connection
+    // This allows 8 simultaneous TCP connections to bypass ESXi's per-connection rate limiting
+    let client = Arc::new(esxi::EsxiClientPool::new(
         &format!("https://{}", args.host),
         &args.user,
         &args.password,
         connector,
+        8, // pool size
     ));
 
     let fs = fs::Fs::new(Arc::clone(&client));
