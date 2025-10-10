@@ -461,11 +461,16 @@ impl EsxiClientPool {
     {
         let mut clients = Vec::with_capacity(pool_size);
 
-        for _ in 0..pool_size {
+        log::info!("Creating HTTP client pool with {} clients for {}", pool_size, base_url);
+
+        for i in 0..pool_size {
             // Each client gets its own SSL connector to force separate connections
             let conn = connector.clone();
             clients.push(Arc::new(EsxiClient::new(base_url, user, password, conn)));
+            log::debug!("Created client {} of {}", i + 1, pool_size);
         }
+
+        log::info!("HTTP client pool initialized with {} clients", pool_size);
 
         Self {
             clients,
@@ -476,6 +481,14 @@ impl EsxiClientPool {
     /// Get the next client in round-robin fashion
     fn get_client(&self) -> &Arc<EsxiClient> {
         let idx = self.counter.fetch_add(1, Ordering::Relaxed) % self.clients.len();
+        let total_requests = self.counter.load(Ordering::Relaxed);
+
+        // Log every 100 requests to show usage pattern
+        if total_requests % 100 == 0 {
+            log::info!("Client pool usage: {} total requests distributed across {} clients",
+                       total_requests, self.clients.len());
+        }
+
         &self.clients[idx]
     }
 
