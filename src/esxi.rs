@@ -4,7 +4,7 @@ use std::future::Future;
 use std::io;
 use std::ops::Range;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::task::{ready, Context, Poll};
@@ -435,5 +435,73 @@ impl ConnectionLimit {
     ) -> (tokio::sync::MutexGuard<()>, SemaphorePermit<'a>) {
         let guard = self.retry.lock().await;
         (guard, permit)
+    }
+}
+
+/// Pool of multiple HTTP clients to enable multiple concurrent TCP connections
+/// Each client maintains its own connection, bypassing per-connection rate limiting
+pub struct EsxiClientPool {
+    clients: Vec<Arc<EsxiClient>>,
+    counter: AtomicUsize,
+}
+
+impl EsxiClientPool {
+    /// Create a pool with the specified number of clients (default: 8)
+    pub fn new<S0, S1, S2>(
+        base_url: &S0,
+        user: &S1,
+        password: &S2,
+        connector: SslConnector,
+        pool_size: usize,
+    ) -> Self
+    where
+        S0: fmt::Display + ?Sized,
+        S1: fmt::Display + ?Sized,
+        S2: fmt::Display + ?Sized,
+    {
+        let mut clients = Vec::with_capacity(pool_size);
+
+        log::info!("Creating HTTP client pool with {} clients for {}", pool_size, base_url);
+
+        for i in 0..pool_size {
+            // Each client gets its own SSL connector to force separate connections
+            let conn = connector.clone();
+            clients.push(Arc::new(EsxiClient::new(base_url, user, password, conn)));
+            log::debug!("Created client {} of {}", i + 1, pool_size);
+        }
+
+        log::info!("HTTP client pool initialized with {} clients", pool_size);
+
+        Self {
+            clients,
+            counter: AtomicUsize::new(0),
+        }
+    }
+
+    /// Get the next client in round-robin fashion
+    fn get_client(&self) -> &Arc<EsxiClient> {
+        let idx = self.counter.fetch_add(1, Ordering::Relaxed) % self.clients.len();
+        let total_requests = self.counter.load(Ordering::Relaxed);
+
+        // Log every 100 requests to show usage pattern
+        if total_requests % 100 == 0 {
+            log::info!("Client pool usage: {} total requests distributed across {} clients",
+                       total_requests, self.clients.len());
+        }
+
+        &self.clients[idx]
+    }
+
+    // Delegate methods to round-robin client selection
+    pub async fn open_file(&self, datacenter: &str, datastore: &str, path: &str) -> Result<EsxiFile, Error> {
+        self.get_client().open_file(datacenter, datastore, path).await
+    }
+
+    pub async fn path_exists(&self, datacenter: &str, datastore: &str, path: &str) -> Result<bool, Error> {
+        self.get_client().path_exists(datacenter, datastore, path).await
+    }
+
+    pub async fn get_file_size(&self, datacenter: &str, datastore: &str, path: &str) -> Result<u64, Error> {
+        self.get_client().get_file_size(datacenter, datastore, path).await
     }
 }

@@ -1,10 +1,10 @@
 [package]
 name = "esxi-folder-fuse"
-version = "1.0.1"
-edition = "2024"
+version = "1.1.0"
+edition = "2021"
 authors = [
     "Wolfgang Bumiller <w.bumiller@proxmox.com>",
-    'Proxmox Development Team <support@proxmox.com>',
+    "Proxmox Development Team <support@proxmox.com>",
 ]
 license = "AGPL-3"
 description = "ESXi fuse client"
@@ -30,6 +30,11 @@ serde_json = "1"
 syslog = "6"
 tokio = { version = "1", features = [ "macros", "rt-multi-thread", "time" ] }
 
-proxmox-async = "0.5"
-proxmox-fuse = "1"
-proxmox-http = { version = "1.0.1", features = [ "body", "client" ] }
+proxmox-async = { git = "https://git.proxmox.com/git/proxmox.git", package = "proxmox-async" }
+proxmox-fuse = { git = "https://git.proxmox.com/git/proxmox-fuse.git" }
+proxmox-http = { git = "https://git.proxmox.com/git/proxmox.git", package = "proxmox-http", features = [ "body", "client" ] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
