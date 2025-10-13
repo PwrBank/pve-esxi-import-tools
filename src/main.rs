@@ -63,7 +63,7 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
           --ready-fd=FDNUM            close file descriptor FDNUM when ready\n  \
           --skip-cert-verification    disable certificate verification\n  \
           --use-ssh                   use SSH+dd streaming instead of HTTP API\n  \
-          --ssh-connections=COUNT     number of concurrent SSH connections (default: 16)\n  \
+          --ssh-connections=COUNT     number of concurrent SSH connections (default: 8)\n  \
           -v, --version               print the version and exit\n  \
           -h, --help                  print this usage help and exit\n\
         "
@@ -195,7 +195,7 @@ fn parse_args() -> Result<Option<Args>, Error> {
     if let Some(value) = argparse.opt_value_from_str("--ssh-connections")? {
         args.ssh_connections = value;
     } else {
-        args.ssh_connections = 16; // default
+        args.ssh_connections = 8; // default - reduced from 16 for better efficiency
     }
 
     while argparse.contains("--debug") {

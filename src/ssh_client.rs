@@ -146,18 +146,38 @@ impl SshClient {
         let skip_bytes = range.start;
         let count_bytes = range.end - range.start;
 
-        // Use dd with bs=1 for precise byte-level control
-        // Alternatively, could use bs=1M with calculated skip/count
+        // Use 1MB blocks for good performance while maintaining byte-level precision
+        // Larger blocks = better throughput, fewer system calls
+        const BLOCK_SIZE: u64 = 1024 * 1024; // 1MB
+
+        // Calculate skip in blocks and bytes
+        let skip_blocks = skip_bytes / BLOCK_SIZE;
+        let skip_remainder = skip_bytes % BLOCK_SIZE;
+
+        // Read slightly more than needed if we have a remainder offset,
+        // then trim to exact range in memory
+        let total_to_read = if skip_remainder > 0 {
+            skip_remainder + count_bytes
+        } else {
+            count_bytes
+        };
+
+        let read_blocks = (total_to_read + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
         let dd_cmd = format!(
-            "dd if='{}' bs=1 skip={} count={} 2>/dev/null",
-            path, skip_bytes, count_bytes
+            "dd if='{}' bs={} skip={} count={} 2>/dev/null",
+            path,
+            BLOCK_SIZE,
+            skip_blocks,
+            read_blocks
         );
 
         log::debug!(
-            "SSH dd command: {} ({}..{}, {} bytes)",
+            "SSH dd: {} skip={} count={} (offset={}, len={})",
             path,
+            skip_blocks,
+            read_blocks,
             skip_bytes,
-            range.end,
             count_bytes
         );
 
@@ -189,14 +209,24 @@ impl SshClient {
             bail!("ssh dd command failed with status: {}", status);
         }
 
-        if buffer.len() < count_bytes as usize {
-            // Reached EOF
-            if buffer.is_empty() {
+        // Trim buffer to exact byte range requested
+        // If we had a skip_remainder, we read extra bytes at the start
+        let trim_start = skip_remainder as usize;
+        let trim_end = trim_start + count_bytes as usize;
+
+        if buffer.len() < trim_end {
+            // Reached EOF or short read
+            if buffer.len() <= trim_start {
                 return Err(EofReached.into());
             }
+            // Return what we got, trimmed appropriately
+            let trimmed = buffer[trim_start..].to_vec();
+            return Ok(Bytes::from(trimmed));
         }
 
-        Ok(Bytes::from(buffer))
+        // Trim to exact range
+        let trimmed = buffer[trim_start..trim_end].to_vec();
+        Ok(Bytes::from(trimmed))
     }
 }
 
