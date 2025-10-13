@@ -11,3 +11,5 @@ pve-esxi-import-tools-[0-9]*/
 .claude/settings.local.json
 .gitignore
 builds/esxi-folder-fuse-optimized-20251008
+.claude/settings.local.json
+.gitignore

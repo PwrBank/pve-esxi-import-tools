@@ -1,10 +1,14 @@
 ///! Unified client interface for both HTTP and SSH-based datastore access
 
+use std::io;
 use std::ops::Range;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use anyhow::Error;
 use hyper::body::Bytes;
+use tokio::io::AsyncRead;
 
 use crate::esxi::{EsxiClient, EsxiFile};
 use crate::ssh_client::{SshClient, SshFile};
@@ -82,6 +86,27 @@ impl DatastoreFile {
         match self {
             Self::Http(file) => file.read_at(range).await,
             Self::Ssh(file) => file.read_at(range).await,
+        }
+    }
+}
+
+impl AsyncRead for DatastoreFile {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Self::Http(file) => Pin::new(file).poll_read(cx, buf),
+            Self::Ssh(_file) => {
+                // SSH files don't support streaming AsyncRead
+                // This is mainly used for parsing VMX files which are small
+                // In practice, the VMX parser should use read_at() for SSH mode
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "AsyncRead not supported for SSH files, use read_at() instead",
+                )))
+            }
         }
     }
 }

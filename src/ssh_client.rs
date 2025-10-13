@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, format_err, Context as _, Error};
 use hyper::body::Bytes;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 
