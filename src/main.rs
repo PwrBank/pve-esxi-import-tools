@@ -15,13 +15,17 @@ use openssl::ssl::{SslConnector, SslMethod};
 use proxmox_fuse::Fuse;
 
 mod cache;
+mod client;
 mod esxi;
 mod fs;
 mod manifest;
+mod ssh_client;
 mod vmx;
 
+use client::DatastoreClient;
 use esxi::EsxiClient;
 use fs::Inode;
+use ssh_client::SshClient;
 
 static mut FILE_CACHE_PAGE_SIZE: u64 = 128 << 20;
 static mut FILE_CACHE_PAGE_COUNT: usize = 16;
@@ -59,6 +63,8 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
           --change-group=UID          change to the provided group after mounting\n  \
           --ready-fd=FDNUM            close file descriptor FDNUM when ready\n  \
           --skip-cert-verification    disable certificate verification\n  \
+          --use-ssh                   use SSH+dd streaming instead of HTTP API\n  \
+          --ssh-connections=COUNT     number of concurrent SSH connections (default: 16)\n  \
           -v, --version               print the version and exit\n  \
           -h, --help                  print this usage help and exit\n\
         "
@@ -77,6 +83,8 @@ struct Args {
     change_group: Option<String>,
     ready_fd: Option<RawFd>,
     skip_cert_verification: bool,
+    use_ssh: bool,
+    ssh_connections: usize,
 
     // positional:
     host: String,
@@ -181,6 +189,16 @@ fn parse_args() -> Result<Option<Args>, Error> {
         args.skip_cert_verification = true;
     }
 
+    while argparse.contains("--use-ssh") {
+        args.use_ssh = true;
+    }
+
+    if let Some(value) = argparse.opt_value_from_str("--ssh-connections")? {
+        args.ssh_connections = value;
+    } else {
+        args.ssh_connections = 16; // default
+    }
+
     while argparse.contains("--debug") {
         log_filter_level = Some(log::LevelFilter::Debug);
     }
@@ -281,23 +299,33 @@ async fn main_do() -> Result<(), Error> {
         unistd::setuid(unistd::Uid::from_raw(uid)).context("failed to change user id")?;
     }
 
-    let mut connector = SslConnector::builder(SslMethod::tls()).unwrap();
-    if args.skip_cert_verification {
-        connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
-    }
-    connector
-        .set_alpn_protos(b"\x02h2")
-        .context("failed to configure alpn protocols")?;
-    let connector = connector.build();
+    let client = if args.use_ssh {
+        log::info!("Using SSH+dd streaming mode with {} concurrent connections", args.ssh_connections);
+        DatastoreClient::Ssh(Arc::new(SshClient::new(
+            args.host.clone(),
+            args.user.clone(),
+            args.ssh_connections,
+        )))
+    } else {
+        log::info!("Using HTTP API mode");
+        let mut connector = SslConnector::builder(SslMethod::tls()).unwrap();
+        if args.skip_cert_verification {
+            connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
+        }
+        connector
+            .set_alpn_protos(b"\x02h2")
+            .context("failed to configure alpn protocols")?;
+        let connector = connector.build();
 
-    let client = Arc::new(EsxiClient::new(
-        &format!("https://{}", args.host),
-        &args.user,
-        &args.password,
-        connector,
-    ));
+        DatastoreClient::Http(Arc::new(EsxiClient::new(
+            &format!("https://{}", args.host),
+            &args.user,
+            &args.password,
+            connector,
+        )))
+    };
 
-    let fs = fs::Fs::new(Arc::clone(&client));
+    let fs = fs::Fs::new(client);
 
     for (datacenter, dc) in &manifest().datacenters {
         let fs_datacenter = fs.create_datacenter(datacenter);

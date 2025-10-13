@@ -14,7 +14,8 @@ use proxmox_fuse::requests::{self, FuseRequest};
 use proxmox_fuse::{Request, ROOT_ID};
 
 use crate::cache::Cache;
-use crate::esxi::{EsxiClient, EsxiFile, IsDirectory, NotFound};
+use crate::client::{DatastoreClient, DatastoreFile};
+use crate::esxi::{IsDirectory, NotFound};
 
 const TIMEOUT: f64 = 600.0;
 const FIRST_INODE: u64 = 3;
@@ -30,7 +31,7 @@ impl fmt::Display for Errno {
 
 impl StdError for Errno {}
 
-fn file_stat(inode: u64, file: &EsxiFile) -> libc::stat {
+fn file_stat(inode: u64, file: &DatastoreFile) -> libc::stat {
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
 
     stat.st_ino = inode;
@@ -52,13 +53,13 @@ fn dir_stat(inode: u64) -> libc::stat {
 }
 
 struct FsBase {
-    client: Arc<EsxiClient>,
+    client: DatastoreClient,
     inodes: Mutex<BTreeMap<u64, Inode>>,
     current_inode: AtomicU64,
 }
 
 impl FsBase {
-    fn new(client: Arc<EsxiClient>) -> Arc<Self> {
+    fn new(client: DatastoreClient) -> Arc<Self> {
         let mut inodes = BTreeMap::new();
         inodes.insert(version_file::INODE, Inode::Version);
 
@@ -80,7 +81,7 @@ pub struct Fs {
 }
 
 impl Fs {
-    pub fn new(client: Arc<EsxiClient>) -> Arc<Self> {
+    pub fn new(client: DatastoreClient) -> Arc<Self> {
         let fs = FsBase::new(client);
         Arc::new(Self {
             root: Root::new(Arc::clone(&fs)),
@@ -742,12 +743,12 @@ impl Dir {
 
 pub struct File {
     inode: u64,
-    file: EsxiFile,
+    file: DatastoreFile,
     cache: Cache,
 }
 
 impl File {
-    fn new(inode: u64, file: EsxiFile) -> Self {
+    fn new(inode: u64, file: DatastoreFile) -> Self {
         Self {
             inode,
             file,
