@@ -24,7 +24,6 @@ mod vmx;
 
 use client::DatastoreClient;
 use esxi::EsxiClient;
-use fs::Inode;
 use ssh_client::SshClient;
 
 static mut FILE_CACHE_PAGE_SIZE: u64 = 128 << 20;
@@ -327,42 +326,16 @@ async fn main_do() -> Result<(), Error> {
 
     let fs = fs::Fs::new(client);
 
+    // Pre-create datacenter and datastore structures for all VMs in manifest
     for (datacenter, dc) in &manifest().datacenters {
         let fs_datacenter = fs.create_datacenter(datacenter);
 
-        for vm in dc.vms.values() {
-            let manifest::VmConfig { datastore, path } = &vm.config;
-            let fs_datastore = fs_datacenter.create_datastore(datastore);
-
-            log::debug!("pre-loading VM config structure for {datacenter:?}/{datastore:?}");
-
-            // Pre-enumerate disk paths from manifest for validation
-            // The actual VMX parsing is done on-demand by the FUSE layer
-            for disk in vm.disks.values() {
-                let other_fs_datastore;
-                let (fs_datastore, datastore, path) = if disk.starts_with('/') {
-                    if let Some((datastore, path)) = manifest().resolve_path(datacenter, disk) {
-                        other_fs_datastore = fs_datacenter.create_datastore(datastore);
-                        (&other_fs_datastore, datastore, path)
-                    } else {
-                        log::debug!("ignoring {disk:?} - failed to resolve datastore");
-                        continue;
-                    }
-                } else {
-                    (&fs_datastore, datastore.as_str(), disk.as_str())
-                };
-
-                if check_file_exists(fs_datastore, path).await? {
-                    log::debug!(
-                        "discovered {disk:?} found at {datacenter:?}/{datastore:?}/{path:?}"
-                    );
-                } else {
-                    log::debug!(
-                        "ignoring {disk:?} - not found at {datacenter:?}/{datastore:?}/{path:?}"
-                    );
-                }
-            }
+        // Pre-create datastore entries
+        for ds_name in dc.datastores.keys() {
+            fs_datacenter.create_datastore(ds_name);
         }
+
+        log::debug!("pre-loaded datacenter {datacenter:?} with {} datastores", dc.datastores.len());
     }
 
     if let Some(fd) = args.ready_fd {
@@ -382,37 +355,6 @@ async fn main_do() -> Result<(), Error> {
     }
 
     Ok(())
-}
-
-async fn check_file_exists(datastore: &Arc<fs::Dir>, path: &str) -> Result<bool, Error> {
-    let mut at = Arc::clone(datastore);
-    let mut iter = path.split('/').peekable();
-    while let Some(component) = iter.next() {
-        if component.is_empty() {
-            continue;
-        }
-
-        if iter.peek().is_none() {
-            // this is a file!
-            match at.lookup(component).await? {
-                None => return Ok(false),
-                Some(Inode::File(_)) => {
-                    log::debug!("found file {path:?}");
-                    break;
-                }
-                Some(_) => bail!("file expected, but found a directory at: {path:?}"),
-            }
-        }
-        // this is a directory
-        match at.lookup(component).await? {
-            Some(Inode::Dir(dir)) => {
-                at = dir;
-            }
-            _ => return Ok(false),
-        }
-    }
-
-    Ok(true)
 }
 
 fn unmount_if_mounted(path: &OsStr) -> Result<(), Error> {
