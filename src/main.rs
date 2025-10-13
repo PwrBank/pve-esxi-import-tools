@@ -334,13 +334,11 @@ async fn main_do() -> Result<(), Error> {
             let manifest::VmConfig { datastore, path } = &vm.config;
             let fs_datastore = fs_datacenter.create_datastore(datastore);
 
-            log::debug!("loading {datacenter:?}/{datastore:?}/{path:?}");
-            let config = client.open_file(datacenter, datastore, path).await?;
-            let config = vmx::VmConfig::parse(config, path).await.with_context(|| {
-                format!("error when parsing VM config: {datacenter:?}/{datastore:?}/{path:?}")
-            })?;
-            log::debug!("{config:#?}");
-            for disk in config.disks.values() {
+            log::debug!("pre-loading VM config structure for {datacenter:?}/{datastore:?}");
+
+            // Pre-enumerate disk paths from manifest for validation
+            // The actual VMX parsing is done on-demand by the FUSE layer
+            for disk in vm.disks.values() {
                 let other_fs_datastore;
                 let (fs_datastore, datastore, path) = if disk.starts_with('/') {
                     if let Some((datastore, path)) = manifest().resolve_path(datacenter, disk) {
