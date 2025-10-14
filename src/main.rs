@@ -254,6 +254,38 @@ fn main() {
     }
 }
 
+/// Test SSH connection to verify key authentication is working
+async fn test_ssh_connection(host: &str, user: &str) -> Result<(), Error> {
+    use tokio::process::Command;
+    use std::process::Stdio;
+
+    let output = Command::new("ssh")
+        .arg("-o").arg("BatchMode=yes")
+        .arg("-o").arg("ConnectTimeout=5")
+        .arg("-o").arg("StrictHostKeyChecking=no")
+        .arg(format!("{}@{}", user, host))
+        .arg("echo")
+        .arg("SSH_OK")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("failed to execute SSH test command")?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.trim() == "SSH_OK" {
+            return Ok(());
+        }
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format_err!(
+        "SSH connection test failed: {}",
+        stderr.trim()
+    ))
+}
+
 async fn main_do() -> Result<(), Error> {
     let arg0 = std::env::args_os().next().unwrap();
     let args = match parse_args() {
@@ -318,16 +350,63 @@ async fn main_do() -> Result<(), Error> {
 
     let client = if args.use_ssh {
         log::info!(
-            "Using SSH+dd streaming mode (default) with {} concurrent connections - 90 MB/s performance",
+            "Attempting SSH+dd streaming mode with {} concurrent connections - 90 MB/s performance",
             args.ssh_connections
         );
-        DatastoreClient::Ssh(Arc::new(SshClient::new(
-            args.host.clone(),
-            args.user.clone(),
-            args.ssh_connections,
-        )))
+
+        // Test SSH connection before committing to SSH mode
+        match test_ssh_connection(&args.host, &args.user).await {
+            Ok(_) => {
+                log::info!("SSH connection successful - using SSH streaming mode");
+                DatastoreClient::Ssh(Arc::new(SshClient::new(
+                    args.host.clone(),
+                    args.user.clone(),
+                    args.ssh_connections,
+                )))
+            }
+            Err(ssh_err) => {
+                // SSH failed - try to fall back to HTTP if password is available
+                if !args.password.is_empty() {
+                    log::warn!(
+                        "SSH connection failed ({}), falling back to HTTP mode with password authentication",
+                        ssh_err
+                    );
+
+                    // Need to drop privileges for HTTP mode if they were requested
+                    if let Some(gid) = change_gid {
+                        unistd::setgid(unistd::Gid::from_raw(gid))
+                            .context("failed to change group id for HTTP fallback")?;
+                    }
+                    if let Some(uid) = change_uid {
+                        unistd::setuid(unistd::Uid::from_raw(uid))
+                            .context("failed to change user id for HTTP fallback")?;
+                    }
+
+                    let mut connector = SslConnector::builder(SslMethod::tls()).unwrap();
+                    if args.skip_cert_verification {
+                        connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
+                    }
+                    connector
+                        .set_alpn_protos(b"\x02h2")
+                        .context("failed to configure alpn protocols")?;
+                    let connector = connector.build();
+
+                    DatastoreClient::Http(Arc::new(EsxiClient::new(
+                        &format!("https://{}", args.host),
+                        &args.user,
+                        &args.password,
+                        connector,
+                    )))
+                } else {
+                    return Err(ssh_err.context(
+                        "SSH connection failed and no password provided for HTTP fallback. \
+                        Please set up SSH keys or provide a password with --password or --password-file"
+                    ));
+                }
+            }
+        }
     } else {
-        log::info!("Using HTTP API mode (fallback) - 40 MB/s performance");
+        log::info!("Using HTTP API mode (explicitly requested) - 40 MB/s performance");
         let mut connector = SslConnector::builder(SslMethod::tls()).unwrap();
         if args.skip_cert_verification {
             connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
