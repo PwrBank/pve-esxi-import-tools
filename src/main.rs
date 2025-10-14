@@ -298,12 +298,24 @@ async fn main_do() -> Result<(), Error> {
 
     // Note: we could connect first, but we want to get the privilege-dropping out of the way
     // before connecting to the outside.
+    //
+    // IMPORTANT: When using SSH mode, we must stay as root to access SSH keys.
+    // SSH keys are in /root/.ssh/ and cannot be accessed by the 'nobody' user.
+    // HTTP mode can safely drop privileges since it only needs password authentication.
 
-    if let Some(gid) = change_gid {
-        unistd::setgid(unistd::Gid::from_raw(gid)).context("failed to change group id")?;
-    }
-    if let Some(uid) = change_uid {
-        unistd::setuid(unistd::Uid::from_raw(uid)).context("failed to change user id")?;
+    if !args.use_ssh {
+        // Only drop privileges for HTTP mode (password authentication)
+        if let Some(gid) = change_gid {
+            unistd::setgid(unistd::Gid::from_raw(gid)).context("failed to change group id")?;
+        }
+        if let Some(uid) = change_uid {
+            unistd::setuid(unistd::Uid::from_raw(uid)).context("failed to change user id")?;
+        }
+    } else {
+        // SSH mode: Keep running as root to access SSH keys
+        if change_uid.is_some() || change_gid.is_some() {
+            log::info!("SSH mode: ignoring --change-user/--change-group flags (root required for SSH key access)");
+        }
     }
 
     let client = if args.use_ssh {
