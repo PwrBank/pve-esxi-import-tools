@@ -124,12 +124,21 @@ impl SshClient {
     ) -> Result<SshFile, Error> {
         log::debug!("open file via SSH [{datacenter}, {datastore}] {path:?}");
         let full_path = self.datastore_path(datacenter, datastore, path);
-        let size = self
-            .get_file_size(datacenter, datastore, path)
-            .await
-            .with_context(|| {
-                format!("error when getting file size: {datacenter:?}/{datastore:?}/{path:?}")
-            })?;
+
+        // Get file size - IMPORTANT: preserve IsDirectory error for FUSE filesystem
+        let size = match self.get_file_size(datacenter, datastore, path).await {
+            Ok(size) => size,
+            Err(err) => {
+                // Preserve IsDirectory error so FUSE can detect directories
+                if err.downcast_ref::<IsDirectory>().is_some() {
+                    return Err(err);
+                }
+                // Add context for other errors
+                return Err(err.context(format!(
+                    "error when getting file size: {datacenter:?}/{datastore:?}/{path:?}"
+                )));
+            }
+        };
 
         Ok(SshFile {
             client: Arc::clone(self),
