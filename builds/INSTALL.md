@@ -23,11 +23,13 @@
 
 ## 📋 Prerequisites
 
-### 1. SSH Key Authentication (Required for Default SSH Mode)
+### 1. SSH Key Authentication (Recommended for Best Performance)
 
-**CRITICAL**: SSH streaming mode (the default) requires SSH key authentication. The tool does **not** automatically fall back to HTTP mode if SSH keys are missing - you must explicitly use `--use-http` for password-based authentication.
+**AUTOMATIC FALLBACK**: The tool intelligently tries SSH mode first (90 MB/s), and automatically falls back to HTTP mode (40 MB/s) if SSH keys aren't configured. Simply provide a password and the tool will use the fastest available method!
 
-SSH key authentication must be configured between PVE and ESXi:
+#### For Optimal Performance (SSH Mode - 90 MB/s):
+
+SSH key authentication should be configured between PVE and ESXi:
 
 ```bash
 # On PVE host (run as root):
@@ -51,7 +53,14 @@ echo "ssh-rsa AAAAB3Nza... root@pve" >> /etc/ssh/keys-root/authorized_keys
 ssh root@your-esxi-host "hostname"
 ```
 
-**If you cannot use SSH keys**, you must use HTTP mode by adding `--use-http` flag when using the command line, or the tool will fail. For Proxmox GUI usage with HTTP mode, you would need to modify the source code (not recommended - SSH mode is 2.5-3x faster).
+#### If You Cannot Use SSH Keys:
+
+**The tool automatically falls back to HTTP mode!** Just configure a password in `/etc/pve/priv/storage/esxi-host.pw` and the tool will:
+1. Try SSH mode first (5 second timeout)
+2. Automatically fall back to HTTP mode if SSH fails
+3. Log the fallback: `"SSH connection failed, falling back to HTTP mode with password authentication"`
+
+**No manual intervention needed** - it just works!
 
 ### 2. ESXi Configuration
 

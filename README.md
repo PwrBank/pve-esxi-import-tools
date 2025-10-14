@@ -54,9 +54,11 @@ PVE → SSH → dd command → Direct VMFS access → Datastore
 
 ## 📋 Prerequisites
 
-### 1. SSH Key Authentication (Required for SSH Mode)
+### 1. SSH Key Authentication (Recommended for Best Performance)
 
-**IMPORTANT**: SSH streaming mode (the default) requires SSH key authentication. The tool does **not** automatically fall back to HTTP mode if SSH keys are missing - you must explicitly use `--use-http` for password-based authentication.
+**AUTOMATIC FALLBACK**: The tool now intelligently tries SSH mode first (90 MB/s), and automatically falls back to HTTP mode (40 MB/s) if SSH keys aren't configured. Simply provide a password and the tool will use the fastest available method.
+
+#### For Best Performance (SSH Mode - 90 MB/s):
 
 Set up SSH key authentication between your PVE host and ESXi host:
 
@@ -85,7 +87,12 @@ echo "ssh-rsa AAAAB3Nza... root@pve" >> /etc/ssh/keys-root/authorized_keys
 ssh root@your-esxi-host "hostname"
 ```
 
-**If you cannot use SSH keys**, you must use HTTP mode with `--use-http` flag (see Usage section below).
+#### Alternative: Password Authentication (HTTP Mode - 40 MB/s):
+
+If you cannot set up SSH keys, the tool automatically falls back to HTTP mode when you provide a password:
+- Proxmox GUI: Configure password in storage settings (automatic fallback)
+- Command line: Use `--password` or `--password-file` (automatic fallback)
+- Manual HTTP mode: Use `--use-http` flag to skip SSH attempt
 
 ### 2. ESXi SSH Access
 
@@ -333,30 +340,19 @@ The critical optimization was changing dd block size:
 
 ## ⚙️ Troubleshooting
 
-### SSH Keys Not Configured (Connection Fails)
+### Automatic Fallback in Action
 
-**Symptom**: Import fails immediately with connection errors or "Permission denied" errors
+**The tool now intelligently falls back from SSH to HTTP!**
 
-**Cause**: SSH key authentication is not set up, and the tool defaults to SSH mode
+When you run an import:
+1. **With SSH keys configured**: Uses SSH mode (90 MB/s) - you'll see: `"SSH connection successful - using SSH streaming mode"`
+2. **Without SSH keys + password provided**: Automatically falls back to HTTP mode (40 MB/s) - you'll see: `"SSH connection failed (...), falling back to HTTP mode"`
+3. **Without SSH keys + no password**: Fails with helpful error message
 
-**Solution**: Either set up SSH keys (recommended) OR use HTTP mode:
-
+Check logs to see which mode was used:
 ```bash
-# Option 1: Set up SSH keys (recommended - 2.5-3x faster)
-# Follow the SSH Key Authentication section in Prerequisites above
-
-# Option 2: Use HTTP mode with password (slower but works without SSH keys)
-/usr/libexec/pve-esxi-import-tools/esxi-folder-fuse \
-  --use-http \
-  --user root \
-  --password yourpassword \
-  --skip-cert-verification \
-  YOUR_ESXI_IP \
-  manifest.json \
-  /mnt/esxi
+journalctl -t esxi-folder-fuse --since "5 minutes ago" | grep -E "SSH connection|HTTP"
 ```
-
-**Note**: For Proxmox GUI usage, SSH keys are strongly recommended as the tool defaults to SSH mode and cannot be easily switched to HTTP mode from the GUI.
 
 ### SSH Key Authentication Not Working
 
