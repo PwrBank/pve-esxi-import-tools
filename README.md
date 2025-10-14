@@ -1,18 +1,23 @@
 # PVE ESXi Import Tools - SSH Streaming Branch (direct-send)
 
-## 🚀 Performance Breakthrough: 2.27x Faster with SSH Streaming
+## 🚀 Performance Breakthrough: 2.5-3x Faster with SSH Streaming
 
-This branch implements **SSH+dd streaming** as the primary data transfer method, bypassing ESXi's HTTP API throttling and achieving **90.9 MB/s** transfer speeds (compared to 40 MB/s with HTTP).
+This branch implements **SSH+dd streaming** as the primary data transfer method, bypassing ESXi's HTTP API throttling and achieving **71-120 MB/s** transfer speeds (compared to 40 MB/s with HTTP).
 
 ## ⚡ Performance Comparison
 
 | Method | Speed | Time for 30GB VM | Notes |
 |--------|-------|------------------|-------|
-| **SSH Streaming (this branch)** | **90.9 MB/s** | **5.5 minutes** | ✅ **Default** |
+| **SSH Streaming (this branch)** | **71-120 MB/s** | **4-7 minutes** | ✅ **Default** (16 connections) |
 | HTTP API (original) | 40 MB/s | 12.5 minutes | Available with `--use-http` |
 | Direct ssh+dd | 103 MB/s | 4.8 minutes | Theoretical maximum |
 
-**SSH streaming achieves 88% of direct SSH efficiency while maintaining full FUSE compatibility!**
+**SSH streaming achieves 70-117% of direct SSH efficiency while maintaining full FUSE compatibility!**
+
+### Latest Performance Update (v1.1.1)
+- **Default connections increased**: 8 → 16 concurrent SSH connections
+- **More consistent throughput**: Reduced fluctuation from 71-110 MB/s to sustained 100+ MB/s
+- **Better network utilization**: Fully saturates gigabit connections
 
 ## 🔧 How It Works
 
@@ -22,8 +27,9 @@ Instead of using ESXi's HTTP API (which is rate-limited), this branch:
 
 1. **Direct datastore access**: Uses SSH to run `dd` directly on ESXi's `/vmfs/volumes/` filesystem
 2. **Large block transfers**: Reads data in 1MB blocks (instead of 1-byte blocks)
-3. **Connection pooling**: Maintains 8 concurrent SSH connections for parallel reads
+3. **Connection pooling**: Maintains 16 concurrent SSH connections for parallel reads (default)
 4. **FUSE integration**: Seamlessly integrates with Proxmox's FUSE-based import system
+5. **Runs as root**: Keeps root privileges in SSH mode to access `/root/.ssh/` keys
 
 ### Architecture Diagram
 
@@ -41,8 +47,10 @@ PVE → SSH → dd command → Direct VMFS access → Datastore
 
 1. **Direct filesystem access** - Bypasses ESXi's HTTP server entirely
 2. **Optimized dd block size** - Uses 1MB blocks for maximum throughput
-3. **Reduced connection overhead** - 8 connections instead of 16 (fewer SSH processes)
+3. **Increased connection pool** - 16 concurrent SSH connections (v1.1.1 default)
 4. **Smart byte alignment** - Handles arbitrary byte offsets efficiently
+5. **Root privilege retention** - Runs as root in SSH mode for key access
+6. **Directory detection fix** - Preserves IsDirectory error for proper FUSE traversal
 
 ## 📋 Prerequisites
 
@@ -131,6 +139,9 @@ pkill -f esxi-folder-fuse
 cp /usr/libexec/pve-esxi-import-tools/esxi-folder-fuse \
    /usr/libexec/pve-esxi-import-tools/esxi-folder-fuse.backup-$(date +%Y%m%d)
 
+# Strip debug symbols to reduce size (74MB → 3.2MB)
+strip target/release/esxi-folder-fuse
+
 # Install the new SSH-enabled binary
 rm -f /usr/libexec/pve-esxi-import-tools/esxi-folder-fuse
 cp target/release/esxi-folder-fuse /usr/libexec/pve-esxi-import-tools/
@@ -145,18 +156,18 @@ echo "✅ Installation complete!"
 # Check version
 /usr/libexec/pve-esxi-import-tools/esxi-folder-fuse --version
 
-# Check binary size (should be ~74MB)
+# Check binary size (should be ~3.2MB after stripping)
 ls -lh /usr/libexec/pve-esxi-import-tools/esxi-folder-fuse
 
-# View help (should show --use-http option)
-/usr/libexec/pve-esxi-import-tools/esxi-folder-fuse --help | grep use-http
+# View help (should show --ssh-connections option)
+/usr/libexec/pve-esxi-import-tools/esxi-folder-fuse --help | grep ssh-connections
 ```
 
 Expected output:
 ```
-1.0.1
--rwxr-xr-x 1 root root 74M Oct 13 12:03 /usr/libexec/pve-esxi-import-tools/esxi-folder-fuse
-  --use-http                  use HTTP API instead of SSH+dd streaming (SSH is default)
+1.1.1
+-rwxr-xr-x 1 root root 3.2M Oct 14 11:07 /usr/libexec/pve-esxi-import-tools/esxi-folder-fuse
+  --ssh-connections=COUNT     number of concurrent SSH connections (default: 16)
 ```
 
 ## 🎯 Usage
@@ -189,9 +200,9 @@ Simply use the standard ESXi import:
   /path/to/manifest.json \
   /mnt/esxi
 
-# Adjust SSH connection count (default: 8):
+# Adjust SSH connection count (default: 16):
 /usr/libexec/pve-esxi-import-tools/esxi-folder-fuse \
-  --ssh-connections 16 \
+  --ssh-connections 24 \
   --user root \
   10.10.5.67 \
   /path/to/manifest.json \
@@ -201,9 +212,12 @@ Simply use the standard ESXi import:
 ### Performance Tuning Options
 
 ```bash
---ssh-connections=COUNT     # Number of concurrent SSH connections (default: 8)
+--ssh-connections=COUNT     # Number of concurrent SSH connections (default: 16)
 --cache-page-size=BYTES     # Cache page size (default: 134217728 = 128MB)
 --cache-page-count=COUNT    # Number of cache pages (default: 16)
+```
+
+**Tip**: For maximum throughput on fast networks (10Gbps+), try `--ssh-connections=24` or `--ssh-connections=32
 ```
 
 ## 🧪 Testing & Validation
