@@ -189,16 +189,14 @@ fn parse_args() -> Result<Option<Args>, Error> {
     }
 
     // SSH is the default mode for better performance (90 MB/s vs 40 MB/s HTTP)
-    // BUT: SSH requires key authentication, so fall back to HTTP if password is provided
+    // Try SSH first (requires key authentication), fall back to HTTP if SSH fails
     // Use --use-http to explicitly force HTTP mode
     if argparse.contains("--use-http") {
         args.use_ssh = false;
-    } else if !args.password.is_empty() {
-        // Password provided - must use HTTP mode (SSH requires key auth)
-        args.use_ssh = false;
-        log::info!("Password provided - using HTTP mode (SSH requires key authentication)");
+        log::info!("--use-http flag specified - using HTTP mode");
     } else {
-        // No password, use SSH with key authentication (default for best performance)
+        // Default: Try SSH mode with key authentication (90 MB/s performance)
+        // Password is ignored in SSH mode - keys are required
         args.use_ssh = true;
     }
 
