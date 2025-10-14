@@ -14,7 +14,7 @@ This branch implements **SSH+dd streaming** as the primary data transfer method,
 
 **SSH streaming achieves 70-117% of direct SSH efficiency while maintaining full FUSE compatibility!**
 
-### Latest Performance Update (v1.1.1)
+### Latest Performance Update (v1.1.2)
 - **Default connections increased**: 8 → 16 concurrent SSH connections
 - **More consistent throughput**: Reduced fluctuation from 71-110 MB/s to sustained 100+ MB/s
 - **Better network utilization**: Fully saturates gigabit connections
@@ -47,7 +47,7 @@ PVE → SSH → dd command → Direct VMFS access → Datastore
 
 1. **Direct filesystem access** - Bypasses ESXi's HTTP server entirely
 2. **Optimized dd block size** - Uses 1MB blocks for maximum throughput
-3. **Increased connection pool** - 16 concurrent SSH connections (v1.1.1 default)
+3. **Increased connection pool** - 16 concurrent SSH connections (v1.1.2 default)
 4. **Smart byte alignment** - Handles arbitrary byte offsets efficiently
 5. **Root privilege retention** - Runs as root in SSH mode for key access
 6. **Directory detection fix** - Preserves IsDirectory error for proper FUSE traversal
@@ -176,7 +176,7 @@ ls -lh /usr/libexec/pve-esxi-import-tools/esxi-folder-fuse
 
 Expected output:
 ```
-1.1.1
+1.1.2
 -rwxr-xr-x 1 root root 3.2M Oct 14 11:07 /usr/libexec/pve-esxi-import-tools/esxi-folder-fuse
   --ssh-connections=COUNT     number of concurrent SSH connections (default: 16)
 ```
@@ -414,6 +414,8 @@ apt-get install --reinstall pve-esxi-import-tools
 ```
 
 ## 📝 Version History
+### v1.1.1 - direct-sed update
+- ✅ **Automatic fallback to HTTP** if SSH is unavailable 
 
 ### v1.0.1 - direct-send branch (2025-10-13)
 
@@ -448,8 +450,6 @@ AGPL-3
 
 - **Original**: Wolfgang Bumiller <w.bumiller@proxmox.com>
 - **Original**: Proxmox Development Team <support@proxmox.com>
-- **HTTP Optimizations**: Performance branch (2025-10-08)
-- **SSH Streaming**: direct-send branch (2025-10-13)
 
 ---
 
