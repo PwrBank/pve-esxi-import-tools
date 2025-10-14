@@ -63,7 +63,7 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
           --ready-fd=FDNUM            close file descriptor FDNUM when ready\n  \
           --skip-cert-verification    disable certificate verification\n  \
           --use-http                  use HTTP API instead of SSH+dd streaming (SSH is default)\n  \
-          --ssh-connections=COUNT     number of concurrent SSH connections (default: 8)\n  \
+          --ssh-connections=COUNT     number of concurrent SSH connections (default: 16)\n  \
           -v, --version               print the version and exit\n  \
           -h, --help                  print this usage help and exit\n\
         "
@@ -189,21 +189,19 @@ fn parse_args() -> Result<Option<Args>, Error> {
     }
 
     // SSH is the default mode for better performance (90 MB/s vs 40 MB/s HTTP)
-    // Try SSH first (requires key authentication), fall back to HTTP if SSH fails
     // Use --use-http to explicitly force HTTP mode
     if argparse.contains("--use-http") {
         args.use_ssh = false;
         log::info!("--use-http flag specified - using HTTP mode");
     } else {
-        // Default: Try SSH mode with key authentication (90 MB/s performance)
-        // Password is ignored in SSH mode - keys are required
+        // Default: SSH mode with key authentication (90 MB/s performance)
         args.use_ssh = true;
     }
 
     if let Some(value) = argparse.opt_value_from_str("--ssh-connections")? {
         args.ssh_connections = value;
     } else {
-        args.ssh_connections = 8; // default - optimized for SSH streaming
+        args.ssh_connections = 16; // default - increased for better throughput saturation
     }
 
     while argparse.contains("--debug") {
