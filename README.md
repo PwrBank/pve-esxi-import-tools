@@ -54,9 +54,11 @@ PVE → SSH → dd command → Direct VMFS access → Datastore
 
 ## 📋 Prerequisites
 
-### 1. SSH Key Authentication
+### 1. SSH Key Authentication (Required for SSH Mode)
 
-SSH key authentication must be set up between your PVE host and ESXi host:
+**IMPORTANT**: SSH streaming mode (the default) requires SSH key authentication. The tool does **not** automatically fall back to HTTP mode if SSH keys are missing - you must explicitly use `--use-http` for password-based authentication.
+
+Set up SSH key authentication between your PVE host and ESXi host:
 
 ```bash
 # On PVE host:
@@ -82,6 +84,8 @@ echo "ssh-rsa AAAAB3Nza... root@pve" >> /etc/ssh/keys-root/authorized_keys
 # From PVE host - should connect without password:
 ssh root@your-esxi-host "hostname"
 ```
+
+**If you cannot use SSH keys**, you must use HTTP mode with `--use-http` flag (see Usage section below).
 
 ### 2. ESXi SSH Access
 
@@ -328,6 +332,31 @@ The critical optimization was changing dd block size:
 ```
 
 ## ⚙️ Troubleshooting
+
+### SSH Keys Not Configured (Connection Fails)
+
+**Symptom**: Import fails immediately with connection errors or "Permission denied" errors
+
+**Cause**: SSH key authentication is not set up, and the tool defaults to SSH mode
+
+**Solution**: Either set up SSH keys (recommended) OR use HTTP mode:
+
+```bash
+# Option 1: Set up SSH keys (recommended - 2.5-3x faster)
+# Follow the SSH Key Authentication section in Prerequisites above
+
+# Option 2: Use HTTP mode with password (slower but works without SSH keys)
+/usr/libexec/pve-esxi-import-tools/esxi-folder-fuse \
+  --use-http \
+  --user root \
+  --password yourpassword \
+  --skip-cert-verification \
+  YOUR_ESXI_IP \
+  manifest.json \
+  /mnt/esxi
+```
+
+**Note**: For Proxmox GUI usage, SSH keys are strongly recommended as the tool defaults to SSH mode and cannot be easily switched to HTTP mode from the GUI.
 
 ### SSH Key Authentication Not Working
 

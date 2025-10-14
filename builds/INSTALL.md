@@ -23,9 +23,11 @@
 
 ## 📋 Prerequisites
 
-### 1. SSH Key Authentication
+### 1. SSH Key Authentication (Required for Default SSH Mode)
 
-**CRITICAL**: SSH key authentication must be configured between PVE and ESXi:
+**CRITICAL**: SSH streaming mode (the default) requires SSH key authentication. The tool does **not** automatically fall back to HTTP mode if SSH keys are missing - you must explicitly use `--use-http` for password-based authentication.
+
+SSH key authentication must be configured between PVE and ESXi:
 
 ```bash
 # On PVE host (run as root):
@@ -48,6 +50,8 @@ echo "ssh-rsa AAAAB3Nza... root@pve" >> /etc/ssh/keys-root/authorized_keys
 # From PVE - should connect without password
 ssh root@your-esxi-host "hostname"
 ```
+
+**If you cannot use SSH keys**, you must use HTTP mode by adding `--use-http` flag when using the command line, or the tool will fail. For Proxmox GUI usage with HTTP mode, you would need to modify the source code (not recommended - SSH mode is 2.5-3x faster).
 
 ### 2. ESXi Configuration
 
