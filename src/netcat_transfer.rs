@@ -372,67 +372,104 @@ pub fn perform_netcat_import(
     let local_ip = get_local_ip()?;
     eprintln!("✓ Local IP: {}", local_ip);
 
-    // 2. Spawn qemu-img convert reading from stdin
-    eprintln!("✓ Starting qemu-img convert...");
-    let mut qemu_cmd = Command::new("/usr/bin/qemu-img.real");
-    qemu_cmd
-        .arg("convert")
-        .arg("-p")
-        .arg("-n")
-        .arg("-f").arg(src_format)
-        .arg("-O").arg(dst_format);
+    // 2. Create a named pipe (FIFO) for qemu-img to read from
+    let fifo_path = format!("/tmp/esxi-netcat-{}.vmdk", local_port);
+    let fifo_path_clone = fifo_path.clone();
 
-    if let Some(bw) = bwlimit {
-        qemu_cmd.arg("-r").arg(format!("{}K", bw));
+    // Clean up any existing FIFO
+    let _ = std::fs::remove_file(&fifo_path);
+
+    // Create FIFO
+    use std::os::unix::fs::DirBuilderExt;
+    let status = Command::new("mkfifo")
+        .arg(&fifo_path)
+        .status()
+        .context("Failed to create FIFO")?;
+
+    if !status.success() {
+        bail!("mkfifo failed");
     }
 
-    qemu_cmd
-        .arg("-")  // Read from stdin
-        .arg(output_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+    eprintln!("✓ Created FIFO: {}", fifo_path);
 
-    let mut qemu_child = qemu_cmd.spawn()
-        .context("Failed to spawn qemu-img")?;
-
-    let mut qemu_stdin = qemu_child.stdin.take()
-        .ok_or_else(|| anyhow::anyhow!("Failed to get qemu stdin"))?;
-
-    // 3. Accept netcat connection in a thread, pipe to qemu-img
+    // 3. Accept netcat connection in a thread, write to FIFO
     let receiver_thread = thread::spawn(move || -> Result<()> {
         let (mut stream, peer) = listener.accept()
             .context("Failed to accept connection")?;
 
         eprintln!("✓ Connection from {}", peer);
 
-        // Check if we need decompression
+        // Open FIFO for writing
+        let fifo_file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&fifo_path_clone)
+            .context("Failed to open FIFO for writing")?;
+
+        // Decompress and write to FIFO
         let mut decompress_child = Command::new("pigz")
             .arg("-d")
             .arg("-c")
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .stdout(Stdio::from(fifo_file))
             .spawn()
             .context("Failed to spawn pigz decompressor")?;
 
         let mut decompress_stdin = decompress_child.stdin.take().unwrap();
-        let mut decompress_stdout = decompress_child.stdout.take().unwrap();
 
-        // Stream: netcat → pigz -d → qemu-img
-        let copy_to_pigz = thread::spawn(move || -> Result<()> {
-            std::io::copy(&mut stream, &mut decompress_stdin)
-                .context("Failed to copy from netcat to pigz")?;
-            Ok(())
-        });
+        // Stream: netcat → pigz -d → FIFO
+        std::io::copy(&mut stream, &mut decompress_stdin)
+            .context("Failed to copy from netcat to pigz")?;
 
-        std::io::copy(&mut decompress_stdout, &mut qemu_stdin)
-            .context("Failed to copy from pigz to qemu-img")?;
+        drop(decompress_stdin);
 
-        copy_to_pigz.join()
-            .map_err(|e| anyhow::anyhow!("Thread panicked: {:?}", e))??;
-
-        decompress_child.wait()
+        let status = decompress_child.wait()
             .context("Decompressor failed")?;
+
+        if !status.success() {
+            bail!("pigz decompression failed");
+        }
+
+        eprintln!("✓ Decompression complete");
+
+        Ok(())
+    });
+
+    // Give receiver thread a moment to start
+    thread::sleep(Duration::from_millis(500));
+
+    // 4. Start qemu-img reading from FIFO
+    eprintln!("✓ Starting qemu-img convert...");
+    let fifo_path_for_qemu = fifo_path.clone();
+    let output_path_clone = output_path.to_path_buf();
+    let src_format_clone = src_format.to_string();
+    let dst_format_clone = dst_format.to_string();
+    let bwlimit_clone = bwlimit.map(|s| s.to_string());
+
+    let qemu_thread = thread::spawn(move || -> Result<()> {
+        let mut qemu_cmd = Command::new("/usr/bin/qemu-img.real");
+        qemu_cmd
+            .arg("convert")
+            .arg("-p")
+            .arg("-n")
+            .arg("-f").arg(&src_format_clone)
+            .arg("-O").arg(&dst_format_clone);
+
+        if let Some(bw) = &bwlimit_clone {
+            qemu_cmd.arg("-r").arg(format!("{}K", bw));
+        }
+
+        qemu_cmd
+            .arg(&fifo_path_for_qemu)
+            .arg(&output_path_clone)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+
+        let status = qemu_cmd.status()
+            .context("Failed to execute qemu-img")?;
+
+        if !status.success() {
+            bail!("qemu-img convert failed");
+        }
 
         Ok(())
     });
@@ -440,7 +477,7 @@ pub fn perform_netcat_import(
     // 4. SSH to ESXi and start sender: dd | pigz | nc
     eprintln!("✓ Starting ESXi sender via SSH...");
     let ssh_cmd = format!(
-        "dd if='{}' bs=128M status=progress | pigz -c | nc {} {}",
+        "dd if='{}' bs=128M | pigz -c | nc {} {}",
         esxi_disk_path,
         local_ip,
         local_port
@@ -464,16 +501,19 @@ pub fn perform_netcat_import(
     receiver_thread.join()
         .map_err(|e| anyhow::anyhow!("Receiver thread panicked: {:?}", e))??;
 
-    // Wait for qemu-img
-    let qemu_status = qemu_child.wait()
-        .context("Failed to wait for qemu-img")?;
+    eprintln!("✓ Receiver completed");
 
-    if !qemu_status.success() {
-        bail!("qemu-img failed with status: {}", qemu_status);
-    }
+    // Wait for qemu-img
+    qemu_thread.join()
+        .map_err(|e| anyhow::anyhow!("qemu-img thread panicked: {:?}", e))??;
+
+    eprintln!("✓ qemu-img completed");
+
+    // Clean up FIFO
+    let _ = std::fs::remove_file(&fifo_path);
 
     eprintln!();
-    eprintln!("✓ Import completed successfully!");
+    eprintln!("✓✓✓ Import completed successfully! ✓✓✓");
 
     Ok(())
 }
