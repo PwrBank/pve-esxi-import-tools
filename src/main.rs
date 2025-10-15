@@ -17,6 +17,7 @@ use proxmox_fuse::Fuse;
 mod cache;
 mod client;
 mod esxi;
+mod esxi_path;
 mod fs;
 mod manifest;
 mod netcat_transfer;
@@ -555,6 +556,8 @@ fn unmount_if_mounted(path: &OsStr) -> Result<(), Error> {
 
 /// Wrapper mode: Act as qemu-img, detecting ESXi imports for acceleration
 async fn wrap_qemu_img_mode(_args: &Args) -> Result<(), Error> {
+    use std::path::PathBuf;
+
     eprintln!("=== ESXi qemu-img Wrapper Mode ===");
     eprintln!("Detecting ESXi imports for netcat acceleration...");
     eprintln!();
@@ -563,18 +566,79 @@ async fn wrap_qemu_img_mode(_args: &Args) -> Result<(), Error> {
     let all_args: Vec<String> = std::env::args().collect();
 
     // Check if this is a convert operation with ESXi FUSE path
-    let is_esxi_import = all_args.iter().any(|arg| {
-        arg.contains("/run/pve/import/esxi/") && arg.ends_with(".vmdk")
-    });
+    let esxi_source = all_args.iter()
+        .find(|arg| arg.contains("/run/pve/import/esxi/") && arg.ends_with(".vmdk"))
+        .cloned();
 
-    if is_esxi_import {
-        eprintln!("✓ ESXi import detected!");
-        eprintln!("TODO: Implement netcat acceleration");
-        eprintln!("Falling back to regular qemu-img for now...");
-        eprintln!();
+    if let Some(source_path) = esxi_source {
+        eprintln!("✓ ESXi import detected: {}", source_path);
+
+        // Parse arguments to extract destination and format
+        let mut dest_path = None;
+        let mut src_format = "vmdk".to_string();
+        let mut dst_format = "qcow2".to_string();
+        let mut bwlimit = None;
+
+        let mut i = 1;
+        while i < all_args.len() {
+            match all_args[i].as_str() {
+                "-f" if i + 1 < all_args.len() => {
+                    src_format = all_args[i + 1].clone();
+                    i += 2;
+                }
+                "-O" if i + 1 < all_args.len() => {
+                    dst_format = all_args[i + 1].clone();
+                    i += 2;
+                }
+                "-r" if i + 1 < all_args.len() => {
+                    bwlimit = Some(all_args[i + 1].clone());
+                    i += 2;
+                }
+                arg if !arg.starts_with('-') && arg != &source_path && arg != "convert" => {
+                    dest_path = Some(arg.to_string());
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+
+        if let Some(dest) = dest_path {
+            eprintln!("✓ Attempting netcat acceleration...");
+
+            // Try to parse FUSE path and perform netcat import
+            match esxi_path::EsxiPathInfo::from_fuse_path(&source_path) {
+                Ok(esxi_info) => {
+                    eprintln!("✓ Resolved ESXi path: {}", esxi_info.disk_path);
+
+                    match netcat_transfer::perform_netcat_import(
+                        &esxi_info.host,
+                        &esxi_info.user,
+                        &esxi_info.disk_path,
+                        &PathBuf::from(&dest),
+                        &src_format,
+                        &dst_format,
+                        bwlimit.as_deref(),
+                    ) {
+                        Ok(()) => {
+                            eprintln!("✓ Netcat import succeeded!");
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            eprintln!("⚠ Netcat import failed: {}", e);
+                            eprintln!("⚠ Falling back to regular qemu-img...");
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("⚠ Failed to parse FUSE path: {}", e);
+                    eprintln!("⚠ Falling back to regular qemu-img...");
+                }
+            }
+        }
     }
 
     // Fall back to real qemu-img
+    eprintln!("→ Using regular qemu-img");
     let real_qemu_img = "/usr/bin/qemu-img.real";
     let status = std::process::Command::new(real_qemu_img)
         .args(&all_args[1..])  // Skip our binary name
@@ -590,6 +654,8 @@ async fn wrap_qemu_img_mode(_args: &Args) -> Result<(), Error> {
 
 /// Direct import mode: Perform netcat-based import directly
 async fn direct_import_mode(args: &Args) -> Result<(), Error> {
+    use std::path::PathBuf;
+
     eprintln!("=== ESXi Direct Import Mode ===");
 
     let source = args.source_path.as_ref()
@@ -605,9 +671,33 @@ async fn direct_import_mode(args: &Args) -> Result<(), Error> {
     }
     eprintln!();
 
-    eprintln!("TODO: Implement netcat direct import");
-    eprintln!("Falling back to regular qemu-img for now...");
-    eprintln!();
+    // Try netcat import if source is a FUSE path
+    if source.contains("/run/pve/import/esxi/") {
+        eprintln!("✓ Detected FUSE path, attempting netcat import...");
+
+        match esxi_path::EsxiPathInfo::from_fuse_path(source) {
+            Ok(esxi_info) => {
+                eprintln!("✓ ESXi Host: {}", esxi_info.host);
+                eprintln!("✓ ESXi Disk: {}", esxi_info.disk_path);
+
+                return netcat_transfer::perform_netcat_import(
+                    &esxi_info.host,
+                    &esxi_info.user,
+                    &esxi_info.disk_path,
+                    &PathBuf::from(dest),
+                    &args.src_format,
+                    &args.dst_format,
+                    args.bwlimit.as_deref(),
+                ).context("Netcat import failed");
+            }
+            Err(e) => {
+                eprintln!("⚠ Failed to parse FUSE path: {}", e);
+                eprintln!("⚠ Falling back to regular qemu-img...");
+            }
+        }
+    } else {
+        eprintln!("→ Not a FUSE path, using regular qemu-img");
+    }
 
     // Fall back to qemu-img
     let mut cmd = std::process::Command::new("/usr/bin/qemu-img");

@@ -341,45 +341,158 @@ impl NetcatTransfer {
     }
 }
 
-/// Helper function to transfer a VM disk directly to a qcow2 file
-pub fn transfer_disk_to_qcow2(
-    config: TransferConfig,
+/// Helper function to perform a complete netcat-based import
+/// Returns immediately, streaming happens in background
+pub fn perform_netcat_import(
+    esxi_host: &str,
+    esxi_user: &str,
+    esxi_disk_path: &str,
     output_path: &Path,
+    src_format: &str,
+    dst_format: &str,
+    bwlimit: Option<&str>,
 ) -> Result<()> {
-    // TODO: Implement full pipeline with qemu-img convert
-    // For now, this is a placeholder
+    use std::process::{Command, Stdio};
+    use std::net::TcpListener;
 
-    log::info!(
-        "Starting netcat transfer: {} -> {}",
-        config.source_path,
-        output_path.display()
-    );
+    eprintln!("=== Starting Netcat Import ===");
+    eprintln!("ESXi Host: {}", esxi_host);
+    eprintln!("ESXi Disk: {}", esxi_disk_path);
+    eprintln!("Output:    {}", output_path.display());
+    eprintln!();
 
-    let transfer = NetcatTransfer::new(config);
-    let handle = transfer.start()?;
+    // 1. Setup netcat listener on random port
+    let listener = TcpListener::bind("0.0.0.0:0")
+        .context("Failed to create netcat listener")?;
+    let local_port = listener.local_addr()?.port();
 
-    // Monitor progress
-    loop {
-        if handle.is_complete() {
-            break;
-        }
+    eprintln!("✓ Netcat listener on port {}", local_port);
 
-        let progress = handle.progress();
-        log::info!(
-            "Progress: {:.1}% ({} MB / {} MB) @ {} MB/s",
-            progress.percentage(),
-            progress.bytes_transferred / 1_000_000,
-            progress.total_bytes / 1_000_000,
-            progress.rate_bytes_per_sec / 1_000_000,
-        );
+    // Get local IP that ESXi can reach (first non-loopback)
+    let local_ip = get_local_ip()?;
+    eprintln!("✓ Local IP: {}", local_ip);
 
-        thread::sleep(Duration::from_secs(2));
+    // 2. Spawn qemu-img convert reading from stdin
+    eprintln!("✓ Starting qemu-img convert...");
+    let mut qemu_cmd = Command::new("/usr/bin/qemu-img.real");
+    qemu_cmd
+        .arg("convert")
+        .arg("-p")
+        .arg("-n")
+        .arg("-f").arg(src_format)
+        .arg("-O").arg(dst_format);
+
+    if let Some(bw) = bwlimit {
+        qemu_cmd.arg("-r").arg(format!("{}K", bw));
     }
 
-    handle.wait()?;
+    qemu_cmd
+        .arg("-")  // Read from stdin
+        .arg(output_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
 
-    log::info!("Transfer completed successfully");
+    let mut qemu_child = qemu_cmd.spawn()
+        .context("Failed to spawn qemu-img")?;
+
+    let mut qemu_stdin = qemu_child.stdin.take()
+        .ok_or_else(|| anyhow::anyhow!("Failed to get qemu stdin"))?;
+
+    // 3. Accept netcat connection in a thread, pipe to qemu-img
+    let receiver_thread = thread::spawn(move || -> Result<()> {
+        let (mut stream, peer) = listener.accept()
+            .context("Failed to accept connection")?;
+
+        eprintln!("✓ Connection from {}", peer);
+
+        // Check if we need decompression
+        let mut decompress_child = Command::new("pigz")
+            .arg("-d")
+            .arg("-c")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .context("Failed to spawn pigz decompressor")?;
+
+        let mut decompress_stdin = decompress_child.stdin.take().unwrap();
+        let mut decompress_stdout = decompress_child.stdout.take().unwrap();
+
+        // Stream: netcat → pigz -d → qemu-img
+        let copy_to_pigz = thread::spawn(move || -> Result<()> {
+            std::io::copy(&mut stream, &mut decompress_stdin)
+                .context("Failed to copy from netcat to pigz")?;
+            Ok(())
+        });
+
+        std::io::copy(&mut decompress_stdout, &mut qemu_stdin)
+            .context("Failed to copy from pigz to qemu-img")?;
+
+        copy_to_pigz.join()
+            .map_err(|e| anyhow::anyhow!("Thread panicked: {:?}", e))??;
+
+        decompress_child.wait()
+            .context("Decompressor failed")?;
+
+        Ok(())
+    });
+
+    // 4. SSH to ESXi and start sender: dd | pigz | nc
+    eprintln!("✓ Starting ESXi sender via SSH...");
+    let ssh_cmd = format!(
+        "dd if='{}' bs=128M status=progress | pigz -c | nc {} {}",
+        esxi_disk_path,
+        local_ip,
+        local_port
+    );
+
+    let ssh_status = Command::new("ssh")
+        .arg("-o").arg("BatchMode=yes")
+        .arg("-o").arg("StrictHostKeyChecking=no")
+        .arg(format!("{}@{}", esxi_user, esxi_host))
+        .arg(&ssh_cmd)
+        .status()
+        .context("Failed to execute SSH command")?;
+
+    if !ssh_status.success() {
+        bail!("SSH command failed with status: {}", ssh_status);
+    }
+
+    eprintln!("✓ ESXi sender completed");
+
+    // Wait for receiver
+    receiver_thread.join()
+        .map_err(|e| anyhow::anyhow!("Receiver thread panicked: {:?}", e))??;
+
+    // Wait for qemu-img
+    let qemu_status = qemu_child.wait()
+        .context("Failed to wait for qemu-img")?;
+
+    if !qemu_status.success() {
+        bail!("qemu-img failed with status: {}", qemu_status);
+    }
+
+    eprintln!();
+    eprintln!("✓ Import completed successfully!");
+
     Ok(())
+}
+
+/// Get local IP address that ESXi can reach
+fn get_local_ip() -> Result<String> {
+    // Try to get IP by connecting to ESXi (doesn't actually connect, just resolves route)
+    use std::net::{TcpStream, SocketAddr};
+
+    // Try to connect to a known address to determine our local IP
+    // We'll use 8.8.8.8 as a reference
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0")
+        .context("Failed to create UDP socket")?;
+    socket.connect("8.8.8.8:80")
+        .context("Failed to connect UDP socket")?;
+    let local_addr = socket.local_addr()
+        .context("Failed to get local address")?;
+
+    Ok(local_addr.ip().to_string())
 }
 
 #[cfg(test)]
