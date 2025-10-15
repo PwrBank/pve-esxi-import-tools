@@ -63,7 +63,8 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
           --change-group=UID          change to the provided group after mounting\n  \
           --ready-fd=FDNUM            close file descriptor FDNUM when ready\n  \
           --skip-cert-verification    disable certificate verification\n  \
-          --use-http                  use HTTP API instead of SSH+dd streaming (SSH is default)\n  \
+          --use-http                  use HTTP API instead of SSH+dd streaming\n  \
+          --use-netcat                use netcat for high-speed direct transfers (~115 MB/s)\n  \
           --ssh-connections=COUNT     number of concurrent SSH connections (default: 16)\n  \
           -v, --version               print the version and exit\n  \
           -h, --help                  print this usage help and exit\n\
@@ -84,6 +85,7 @@ struct Args {
     ready_fd: Option<RawFd>,
     skip_cert_verification: bool,
     use_ssh: bool,
+    use_netcat: bool,
     ssh_connections: usize,
 
     // positional:
@@ -189,14 +191,20 @@ fn parse_args() -> Result<Option<Args>, Error> {
         args.skip_cert_verification = true;
     }
 
-    // SSH is the default mode for better performance
-    // Use --use-http to explicitly force HTTP mode
-    if argparse.contains("--use-http") {
+    // Netcat mode takes priority, then HTTP, then SSH (default)
+    if argparse.contains("--use-netcat") {
+        args.use_netcat = true;
         args.use_ssh = false;
+        log::warn!("--use-netcat mode is experimental and not yet fully implemented");
+        log::info!("--use-netcat flag specified - using netcat direct transfer mode");
+    } else if argparse.contains("--use-http") {
+        args.use_ssh = false;
+        args.use_netcat = false;
         log::info!("--use-http flag specified - using HTTP mode");
     } else {
         // Default: SSH mode with key authentication
         args.use_ssh = true;
+        args.use_netcat = false;
     }
 
     if let Some(value) = argparse.opt_value_from_str("--ssh-connections")? {
