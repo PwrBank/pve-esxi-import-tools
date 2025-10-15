@@ -382,6 +382,17 @@ pub struct SshFile {
     at: u64,
 }
 
+impl Clone for SshFile {
+    fn clone(&self) -> Self {
+        Self {
+            client: Arc::clone(&self.client),
+            path: Arc::clone(&self.path),
+            size: AtomicU64::new(self.size.load(Ordering::Acquire)),
+            at: 0, // Reset position for cloned file
+        }
+    }
+}
+
 impl SshFile {
     /// Get the file size
     pub fn size(&self) -> u64 {

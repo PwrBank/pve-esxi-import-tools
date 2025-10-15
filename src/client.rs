@@ -67,6 +67,7 @@ impl DatastoreClient {
 }
 
 /// Unified file handle that can be either HTTP or SSH-based
+#[derive(Clone)]
 pub enum DatastoreFile {
     Http(EsxiFile),
     Ssh(SshFile),

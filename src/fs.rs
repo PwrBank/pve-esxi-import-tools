@@ -763,7 +763,7 @@ impl File {
         file_stat(self.inode, &self.file)
     }
 
-    async fn handle_read(&self, read: ReadRequest) -> Result<(), Error> {
+    async fn handle_read(self: &Arc<Self>, read: ReadRequest) -> Result<(), Error> {
         // Holds the Arcs to the data we reference.
         let mut response_refs = Vec::new();
         // Holds the iovecs.
@@ -773,6 +773,9 @@ impl File {
 
         let end = offset.saturating_add(read.size as u64);
         let mut size = (end - offset) as usize;
+
+        let mut last_block_offset = 0u64;
+        let mut is_first_block = true;
 
         while size != 0 {
             let block = self
@@ -794,8 +797,18 @@ impl File {
                         break;
                     }
 
+                    // Track block for prefetching
+                    if is_first_block {
+                        last_block_offset = read_result.block_offset;
+                        is_first_block = false;
+                    }
+
                     if response.is_empty() && size <= len {
                         read.into_inner().reply(&bytes[..len])?;
+
+                        // Trigger prefetch for next blocks
+                        self.trigger_prefetch(last_block_offset);
+
                         return Ok(());
                     }
 
@@ -813,7 +826,46 @@ impl File {
         } else {
             read.into_inner().reply_vectored(&response)?;
         }
+
+        // Trigger prefetch for next blocks
+        if !is_first_block {
+            self.trigger_prefetch(last_block_offset);
+        }
+
         Ok(())
+    }
+
+    fn trigger_prefetch(self: &Arc<Self>, block_offset: u64) {
+        // Prefetch the next 8 blocks (up to 1 GB with 128MB blocks)
+        const PREFETCH_COUNT: usize = 8;
+
+        for i in 1..=PREFETCH_COUNT {
+            let next_offset = self.cache.next_block_offset(block_offset);
+            let next_offset = next_offset.wrapping_add(self.cache.block_size() * (i as u64 - 1));
+
+            // Skip if already cached or being fetched
+            if self.cache.is_block_pending(next_offset) {
+                continue;
+            }
+
+            // Clone the Arc for the background task
+            let file_arc = Arc::clone(self);
+
+            tokio::spawn(async move {
+                let _ = file_arc
+                    .cache
+                    .lookup(next_offset, |from, to| {
+                        let file = file_arc.file.clone();
+                        async move {
+                            let data = file.read_at(from..to).await?;
+                            Ok(if data.is_empty() { None } else { Some(data) })
+                        }
+                    })
+                    .await;
+
+                log::debug!("Prefetched block at offset {}", next_offset);
+            });
+        }
     }
 
     fn handle_open(&self, mut open: requests::Open) -> Result<(), Error> {

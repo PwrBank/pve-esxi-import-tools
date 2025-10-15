@@ -312,6 +312,18 @@ pub struct EsxiFile {
     state: ReadState,
 }
 
+impl Clone for EsxiFile {
+    fn clone(&self) -> Self {
+        Self {
+            client: Arc::clone(&self.client),
+            query: Arc::clone(&self.query),
+            size: AtomicU64::new(self.size.load(Ordering::Acquire)),
+            at: 0, // Reset position for cloned file
+            state: ReadState::New, // Reset state for cloned file
+        }
+    }
+}
+
 impl EsxiFile {
     /// Get the file size. This is cached from the `HEAD` request made at `open_file` time, so if
     /// the file size changes in between, this is not updated.

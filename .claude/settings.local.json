@@ -1,23 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(ssh root@10.10.5.69 \"echo ''SSH connection successful''\")",
-      "Bash(ssh root@10.10.5.69 \"hostname && pveversion\")",
-      "Bash(test:*)",
-      "Bash(ssh-keygen:*)",
-      "Bash(ssh-copy-id:*)",
-      "Bash(cargo build:*)",
-      "Bash(ssh:*)",
-      "Bash(rsync:*)",
-      "Bash(scp:*)",
-      "Read(//c/Users/mneuforth/.ssh/**)",
-      "Bash(git checkout:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nImplement SSH+dd streaming as alternative to HTTP API\n\nThis commit adds SSH-based direct datastore access as an alternative\nto the HTTP API, potentially bypassing ESXi HTTP server throttling.\n\nChanges:\n- Add ssh_client.rs: SSH+dd streaming client with connection pooling\n- Add client.rs: Unified DatastoreClient enum wrapping HTTP and SSH\n- Update fs.rs: Use DatastoreClient instead of direct EsxiClient\n- Update main.rs: Add --use-ssh and --ssh-connections flags\n\nUsage:\n  --use-ssh                   Enable SSH+dd streaming mode\n  --ssh-connections=COUNT     Number of concurrent SSH connections (default: 16)\n\nBenefits over HTTP:\n- Bypasses ESXi HTTP API rate limiting\n- Direct datastore access via dd\n- Potentially 2-4x faster on some systems\n- Lower protocol overhead\n\nRequires SSH key authentication to ESXi host.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
-      "Bash(git push:*)",
-      "Bash(git add:*)",
-      "Bash(git commit:*)",
-      "Bash(md5sum:*)",
-      "Bash(sha256sum:*)"
+      "Bash(do ssh root@10.10.5.69 \"ssh root@10.10.5.67 \"\"echo ''=== Check $i ==='' && esxcli network ip connection list | grep -E '':22.*ESTABLISHED'' | wc -l && ps -c | grep '' sh$'' | wc -l && ps -c | grep ''dd if='' | wc -l\"\"\")"
     ],
     "deny": [],
     "ask": []

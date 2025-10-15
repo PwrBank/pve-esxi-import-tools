@@ -28,6 +28,9 @@ pub struct Cache {
     /// Disabled while the kernel doesn't have any "open" handle to the file, that is an `Open`
     /// fuse request enables the cache, and a `Release` request clears and disables it.
     enabled: AtomicUsize,
+
+    /// Track the last requested block offset for sequential read detection
+    last_offset: std::sync::atomic::AtomicU64,
 }
 
 impl Cache {
@@ -47,6 +50,7 @@ impl Cache {
             entries: Mutex::new(LruMap::new(block_count)),
             active_lookups: Mutex::new(BTreeMap::new()),
             enabled: AtomicUsize::new(0),
+            last_offset: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -69,13 +73,48 @@ impl Cache {
         Fut: Future<Output = Result<Option<Bytes>, Error>> + Send + Sync,
     {
         let block_offset = offset & self.block_mask;
-        Ok(self
+
+        // Update last offset for sequential read detection
+        let last_offset = self.last_offset.swap(block_offset, std::sync::atomic::Ordering::Relaxed);
+
+        let result = self
             .lookup_block(block_offset, fill)
             .await?
             .map(move |entry| ReadResult {
                 block_offset,
                 entry,
-            }))
+            });
+
+        // Return sequential read info along with the result
+        // The caller can use this to trigger prefetching
+        let is_sequential = block_offset == last_offset.wrapping_add(self.block_size);
+        if is_sequential {
+            log::debug!("Sequential read detected: last={}, current={}", last_offset, block_offset);
+        }
+
+        Ok(result)
+    }
+
+    /// Check if a block is already cached or being fetched
+    pub fn is_block_pending(&self, offset: u64) -> bool {
+        let block_offset = offset & self.block_mask;
+        let entries = self.entries.lock().unwrap();
+        if entries.entries.contains_key(&block_offset) {
+            return true;
+        }
+        let active = self.active_lookups.lock().unwrap();
+        active.contains_key(&block_offset)
+    }
+
+    /// Get the next block offset for sequential prefetching
+    pub fn next_block_offset(&self, offset: u64) -> u64 {
+        let block_offset = offset & self.block_mask;
+        block_offset.wrapping_add(self.block_size)
+    }
+
+    /// Get the block size
+    pub fn block_size(&self) -> u64 {
+        self.block_size
     }
 
     async fn lookup_block<Fut, F>(
