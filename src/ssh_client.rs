@@ -167,6 +167,8 @@ pub struct SshClient {
     session_pool: Arc<SshSessionPool>,
     /// Limits concurrent SSH operations
     connection_pool: Arc<Semaphore>,
+    /// Counter for round-robin session selection
+    session_counter: AtomicU64,
 }
 
 impl SshClient {
@@ -186,6 +188,7 @@ impl SshClient {
             host,
             user,
             connection_pool: Arc::new(Semaphore::new(max_connections)),
+            session_counter: AtomicU64::new(0),
         }
     }
 
@@ -195,7 +198,7 @@ impl SshClient {
     }
 
     /// Get the datastore path for a file
-    fn datastore_path(&self, datacenter: &str, datastore: &str, path: &str) -> String {
+    fn datastore_path(&self, _datacenter: &str, datastore: &str, path: &str) -> String {
         // ESXi datastore paths: /vmfs/volumes/<datastore>/<path>
         format!("/vmfs/volumes/{}/{}", datastore, path.trim_start_matches('/'))
     }
@@ -309,8 +312,9 @@ impl SshClient {
     /// Read a specific byte range from a file using dd over persistent SSH connection
     async fn read_range(&self, path: &str, range: Range<u64>) -> Result<Bytes, Error> {
         // Acquire a permit from the semaphore
-        let permit = self.connection_pool.acquire().await?;
-        let session_index = (permit.as_ref() as *const _ as usize) % self.session_pool.sessions.len();
+        let _permit = self.connection_pool.acquire().await?;
+        // Use round-robin to select a session
+        let session_index = (self.session_counter.fetch_add(1, Ordering::Relaxed) as usize) % self.session_pool.sessions.len();
 
         let skip_bytes = range.start;
         let count_bytes = range.end - range.start;
