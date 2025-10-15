@@ -10,14 +10,6 @@ license = "AGPL-3"
 description = "ESXi fuse client"
 homepage = "https://www.proxmox.com"
 
-[[bin]]
-name = "esxi-folder-fuse"
-path = "src/main.rs"
-
-[[bin]]
-name = "esxi-netcat-import"
-path = "src/bin/esxi-netcat-import.rs"
-
 [dependencies]
 anyhow = "1"
 env_logger = "0.11"

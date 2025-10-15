@@ -49,8 +49,8 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
     let _ = out.write_all(arg0.as_bytes());
     let _ = write!(
         out,
-        " [options] <host>[:<port>] <manifest-file> <mount-path>\n\
-        options:\n  \
+        " [options] <host>[:<port>] <manifest-file> <mount-path>\n\n\
+        FUSE Mount Mode (default):\n  \
           --cache-page-size=BYTES     size of a per-file cache entry\n  \
           --cache-page-count=COUNT    number of cache entries per file\n  \
           --user=USERNAME             user to login as\n  \
@@ -65,7 +65,17 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
           --skip-cert-verification    disable certificate verification\n  \
           --use-http                  use HTTP API instead of SSH+dd streaming\n  \
           --use-netcat                use netcat for high-speed direct transfers (~115 MB/s)\n  \
-          --ssh-connections=COUNT     number of concurrent SSH connections (default: 16)\n  \
+          --ssh-connections=COUNT     number of concurrent SSH connections (default: 16)\n\n\
+        Wrapper Mode (for transparent netcat acceleration):\n  \
+          --wrap-qemu-img <args>      act as qemu-img wrapper, detecting ESXi imports\n\n\
+        Direct Import Mode (bypass FUSE):\n  \
+          --direct-import             perform direct netcat import\n  \
+            --source=PATH             source FUSE path or ESXi disk path\n  \
+            --dest=PATH               destination path\n  \
+            --src-format=FMT          source format (default: vmdk)\n  \
+            --dst-format=FMT          destination format (default: qcow2)\n  \
+            --bwlimit=RATE            bandwidth limit in KiB/s\n\n\
+        General:\n  \
           -v, --version               print the version and exit\n  \
           -h, --help                  print this usage help and exit\n\
         "
@@ -76,7 +86,10 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
 
 #[derive(Default)]
 struct Args {
-    // options:
+    // Mode selection
+    mode: OperationMode,
+
+    // FUSE mount options:
     user: String,
     password: String,
     mount_options: Vec<OsString>,
@@ -88,10 +101,25 @@ struct Args {
     use_netcat: bool,
     ssh_connections: usize,
 
-    // positional:
+    // FUSE positional:
     host: String,
     manifest: OsString,
     mount_path: OsString,
+
+    // Direct import options:
+    source_path: Option<String>,
+    dest_path: Option<String>,
+    src_format: String,
+    dst_format: String,
+    bwlimit: Option<String>,
+}
+
+#[derive(Default, Debug, PartialEq)]
+enum OperationMode {
+    #[default]
+    FuseMount,
+    WrapQemuImg,
+    DirectImport,
 }
 
 impl Args {
@@ -133,6 +161,13 @@ fn parse_args() -> Result<Option<Args>, Error> {
     if argparse.contains(["-v", "--version"]) {
         println!(env!("CARGO_PKG_VERSION"));
         std::process::exit(0);
+    }
+
+    // Detect operation mode
+    if argparse.contains("--wrap-qemu-img") {
+        args.mode = OperationMode::WrapQemuImg;
+    } else if argparse.contains("--direct-import") {
+        args.mode = OperationMode::DirectImport;
     }
 
     if let Some(value) = argparse.opt_value_from_os_str("-o", |os| Ok::<_, Error>(os.to_owned()))? {
@@ -213,6 +248,27 @@ fn parse_args() -> Result<Option<Args>, Error> {
         args.ssh_connections = 16; // default - increased for better throughput saturation
     }
 
+    // Direct import mode options
+    if let Some(value) = argparse.opt_value_from_str("--source")? {
+        args.source_path = Some(value);
+    }
+    if let Some(value) = argparse.opt_value_from_str("--dest")? {
+        args.dest_path = Some(value);
+    }
+    if let Some(value) = argparse.opt_value_from_str("--src-format")? {
+        args.src_format = value;
+    } else {
+        args.src_format = "vmdk".to_string();
+    }
+    if let Some(value) = argparse.opt_value_from_str("--dst-format")? {
+        args.dst_format = value;
+    } else {
+        args.dst_format = "qcow2".to_string();
+    }
+    if let Some(value) = argparse.opt_value_from_str("--bwlimit")? {
+        args.bwlimit = Some(value);
+    }
+
     while argparse.contains("--debug") {
         log_filter_level = Some(log::LevelFilter::Debug);
     }
@@ -228,7 +284,10 @@ fn parse_args() -> Result<Option<Args>, Error> {
     )
     .map_err(|err| format_err!("failed to initialize syslog: {err}"))?;
 
-    args.parse_vec(argparse.finish())?;
+    // Only parse positional args for FUSE mode
+    if args.mode == OperationMode::FuseMount {
+        args.parse_vec(argparse.finish())?;
+    }
 
     Ok(Some(args))
 }
@@ -305,6 +364,20 @@ async fn main_do() -> Result<(), Error> {
             usage(&arg0, std::io::stderr(), 1);
         }
     };
+
+    // Handle different operation modes
+    match args.mode {
+        OperationMode::WrapQemuImg => {
+            return wrap_qemu_img_mode(&args).await;
+        }
+        OperationMode::DirectImport => {
+            return direct_import_mode(&args).await;
+        }
+        OperationMode::FuseMount => {
+            // Continue with normal FUSE mount logic below
+        }
+    }
+
     parse_manifest(&args.manifest)?;
 
     let change_uid = match args.change_user.as_deref() {
@@ -477,6 +550,86 @@ fn unmount_if_mounted(path: &OsStr) -> Result<(), Error> {
             }
         }
     }
+    Ok(())
+}
+
+/// Wrapper mode: Act as qemu-img, detecting ESXi imports for acceleration
+async fn wrap_qemu_img_mode(_args: &Args) -> Result<(), Error> {
+    eprintln!("=== ESXi qemu-img Wrapper Mode ===");
+    eprintln!("Detecting ESXi imports for netcat acceleration...");
+    eprintln!();
+
+    // Get all arguments passed to us
+    let all_args: Vec<String> = std::env::args().collect();
+
+    // Check if this is a convert operation with ESXi FUSE path
+    let is_esxi_import = all_args.iter().any(|arg| {
+        arg.contains("/run/pve/import/esxi/") && arg.ends_with(".vmdk")
+    });
+
+    if is_esxi_import {
+        eprintln!("✓ ESXi import detected!");
+        eprintln!("TODO: Implement netcat acceleration");
+        eprintln!("Falling back to regular qemu-img for now...");
+        eprintln!();
+    }
+
+    // Fall back to real qemu-img
+    let real_qemu_img = "/usr/bin/qemu-img.real";
+    let status = std::process::Command::new(real_qemu_img)
+        .args(&all_args[1..])  // Skip our binary name
+        .status()
+        .context("Failed to execute real qemu-img")?;
+
+    if !status.success() {
+        bail!("qemu-img exited with status: {}", status);
+    }
+
+    Ok(())
+}
+
+/// Direct import mode: Perform netcat-based import directly
+async fn direct_import_mode(args: &Args) -> Result<(), Error> {
+    eprintln!("=== ESXi Direct Import Mode ===");
+
+    let source = args.source_path.as_ref()
+        .ok_or_else(|| format_err!("--source is required for direct import mode"))?;
+    let dest = args.dest_path.as_ref()
+        .ok_or_else(|| format_err!("--dest is required for direct import mode"))?;
+
+    eprintln!("Source: {}", source);
+    eprintln!("Dest:   {}", dest);
+    eprintln!("Format: {} -> {}", args.src_format, args.dst_format);
+    if let Some(bw) = &args.bwlimit {
+        eprintln!("BW Limit: {} KiB/s", bw);
+    }
+    eprintln!();
+
+    eprintln!("TODO: Implement netcat direct import");
+    eprintln!("Falling back to regular qemu-img for now...");
+    eprintln!();
+
+    // Fall back to qemu-img
+    let mut cmd = std::process::Command::new("/usr/bin/qemu-img");
+    cmd.arg("convert")
+        .arg("-p")
+        .arg("-n")
+        .arg("-f").arg(&args.src_format)
+        .arg("-O").arg(&args.dst_format);
+
+    if let Some(bw) = &args.bwlimit {
+        cmd.arg("-r").arg(format!("{}K", bw));
+    }
+
+    cmd.arg(source).arg(dest);
+
+    let status = cmd.status()
+        .context("Failed to execute qemu-img")?;
+
+    if !status.success() {
+        bail!("qemu-img convert failed with status: {}", status);
+    }
+
     Ok(())
 }
 
