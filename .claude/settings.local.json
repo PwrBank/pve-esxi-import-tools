@@ -1,8 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(for i in 1 2 3 4 5 6 7 8)",
-      "Bash(do ssh root@10.10.5.69 \"ssh root@10.10.5.67 \"\"echo ''=== Check $i ==='' && echo ''SSH connections:'' && esxcli network ip connection list | grep -E '':22.*ESTABLISHED'' | wc -l && echo ''Shell processes:'' && ps -c | grep '' sh$'' | wc -l && echo ''DD processes:'' && ps -c | grep ''dd if='' | wc -l\"\"\")"
+      "Bash(for i in 1 2 3 4 5 6 7 8 9 10 11 12)",
+      "Bash(do ssh root@10.10.5.69 \"ssh root@10.10.5.67 \"\"echo ''=== Check $i - GUI Import After Restart ==='' && echo ''SSH connections from Proxmox:'' && esxcli network ip connection list | grep 10.10.5.69 | grep '':22'' | wc -l && echo ''DD processes:'' && ps -c | grep ''dd if='' | wc -l\"\"\")",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []

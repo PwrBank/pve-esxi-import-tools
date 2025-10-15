@@ -836,8 +836,8 @@ impl File {
     }
 
     fn trigger_prefetch(self: &Arc<Self>, block_offset: u64) {
-        // Prefetch the next 10 blocks (up to 1.25 GB with 128MB blocks - balanced for CPU/network)
-        const PREFETCH_COUNT: usize = 10;
+        // Prefetch the next 3 blocks (384 MB with 128MB blocks - conservative for stability)
+        const PREFETCH_COUNT: usize = 3;
 
         for i in 1..=PREFETCH_COUNT {
             let next_offset = self.cache.next_block_offset(block_offset);
