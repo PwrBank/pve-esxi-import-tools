@@ -6,25 +6,183 @@ use std::sync::Arc;
 
 use anyhow::{bail, format_err, Context as _, Error};
 use hyper::body::Bytes;
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
-use tokio::sync::Semaphore;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::{Child, Command};
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::esxi::{EofReached, IsDirectory, NotFound};
 
+/// A persistent SSH session that can execute multiple commands
+struct PersistentSshSession {
+    child: Child,
+}
+
+impl PersistentSshSession {
+    /// Create a new persistent SSH session
+    async fn new(host: &str, user: &str) -> Result<Self, Error> {
+        let ssh_host = format!("{}@{}", user, host);
+
+        let child = Command::new("ssh")
+            .arg("-o").arg("BatchMode=yes")
+            .arg("-o").arg("StrictHostKeyChecking=no")
+            .arg("-o").arg("ServerAliveInterval=60")
+            .arg("-o").arg("ServerAliveCountMax=3")
+            .arg(&ssh_host)
+            .arg("sh") // Start a shell session
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("failed to spawn persistent SSH session")?;
+
+        log::debug!("Created persistent SSH session to {}", ssh_host);
+
+        Ok(Self { child })
+    }
+
+    /// Execute a dd command and read the output
+    async fn read_range(&mut self, path: &str, skip_blocks: u64, read_blocks: u64, block_size: u64) -> Result<Vec<u8>, Error> {
+        let stdin = self.child.stdin.as_mut()
+            .ok_or_else(|| format_err!("stdin not available"))?;
+        let stdout = self.child.stdout.as_mut()
+            .ok_or_else(|| format_err!("stdout not available"))?;
+
+        // Send the dd command
+        let cmd = format!(
+            "dd if='{}' bs={} skip={} count={} 2>/dev/null; echo DONE_$?\n",
+            path, block_size, skip_blocks, read_blocks
+        );
+
+        stdin.write_all(cmd.as_bytes()).await
+            .context("failed to write command to SSH session")?;
+        stdin.flush().await
+            .context("failed to flush SSH stdin")?;
+
+        // Read the dd output
+        let expected_size = (read_blocks * block_size) as usize;
+        let mut buffer = Vec::with_capacity(expected_size);
+
+        // Read data until we see "DONE_" marker
+        let mut marker_buf = Vec::new();
+        loop {
+            let mut byte = [0u8; 1];
+            stdout.read_exact(&mut byte).await
+                .context("failed to read from SSH session")?;
+
+            if byte[0] == b'D' || !marker_buf.is_empty() {
+                marker_buf.push(byte[0]);
+                if marker_buf.starts_with(b"DONE_") {
+                    // Read the exit code and newline
+                    let mut exit_code = Vec::new();
+                    loop {
+                        let mut byte = [0u8; 1];
+                        stdout.read_exact(&mut byte).await?;
+                        if byte[0] == b'\n' {
+                            break;
+                        }
+                        exit_code.push(byte[0]);
+                    }
+
+                    // Check if dd succeeded
+                    let code = String::from_utf8_lossy(&exit_code);
+                    if code.trim() != "0" {
+                        bail!("dd command failed with exit code: {}", code);
+                    }
+
+                    break;
+                }
+
+                // False alarm, wasn't the marker
+                if marker_buf.len() >= 5 && !b"DONE_".starts_with(&marker_buf) {
+                    buffer.extend_from_slice(&marker_buf);
+                    marker_buf.clear();
+                }
+            } else {
+                buffer.push(byte[0]);
+            }
+        }
+
+        Ok(buffer)
+    }
+
+    /// Check if the session is still alive
+    fn is_alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+}
+
+impl Drop for PersistentSshSession {
+    fn drop(&mut self) {
+        // Try to kill the SSH process gracefully
+        let _ = self.child.start_kill();
+    }
+}
+
+/// Pool of persistent SSH sessions
+struct SshSessionPool {
+    host: String,
+    user: String,
+    sessions: Vec<Mutex<Option<PersistentSshSession>>>,
+}
+
+impl SshSessionPool {
+    fn new(host: String, user: String, pool_size: usize) -> Self {
+        let sessions = (0..pool_size)
+            .map(|_| Mutex::new(None))
+            .collect();
+
+        Self {
+            host,
+            user,
+            sessions,
+        }
+    }
+
+    /// Get a session from the pool, creating a new one if needed
+    async fn get_session(&self, index: usize) -> Result<tokio::sync::MutexGuard<'_, Option<PersistentSshSession>>, Error> {
+        let mut guard = self.sessions[index].lock().await;
+
+        // Check if we need to create or recreate the session
+        let needs_new = match guard.as_mut() {
+            None => true,
+            Some(session) => !session.is_alive(),
+        };
+
+        if needs_new {
+            log::debug!("Creating new persistent SSH session #{}", index);
+            let new_session = PersistentSshSession::new(&self.host, &self.user).await?;
+            *guard = Some(new_session);
+        }
+
+        Ok(guard)
+    }
+}
+
 /// SSH-based client for streaming data directly from ESXi datastores
-/// Uses dd + SSH to bypass HTTP API throttling
+/// Uses dd + SSH with persistent connections to bypass HTTP API throttling
 pub struct SshClient {
     host: String,
     user: String,
-    /// Limits concurrent SSH connections
+    /// Pool of persistent SSH sessions
+    session_pool: Arc<SshSessionPool>,
+    /// Limits concurrent SSH operations
     connection_pool: Arc<Semaphore>,
 }
 
 impl SshClient {
-    /// Create a new SSH client
+    /// Create a new SSH client with persistent connections
     pub fn new(host: String, user: String, max_connections: usize) -> Self {
+        log::info!(
+            "Initializing SSH client with {} persistent connections to {}@{}",
+            max_connections, user, host
+        );
+
         Self {
+            session_pool: Arc::new(SshSessionPool::new(
+                host.clone(),
+                user.clone(),
+                max_connections,
+            )),
             host,
             user,
             connection_pool: Arc::new(Semaphore::new(max_connections)),
@@ -148,15 +306,16 @@ impl SshClient {
         })
     }
 
-    /// Read a specific byte range from a file using dd over SSH
+    /// Read a specific byte range from a file using dd over persistent SSH connection
     async fn read_range(&self, path: &str, range: Range<u64>) -> Result<Bytes, Error> {
-        let _permit = self.connection_pool.acquire().await?;
+        // Acquire a permit from the semaphore
+        let permit = self.connection_pool.acquire().await?;
+        let session_index = (permit.as_ref() as *const _ as usize) % self.session_pool.sessions.len();
 
         let skip_bytes = range.start;
         let count_bytes = range.end - range.start;
 
         // Use 1MB blocks for good performance while maintaining byte-level precision
-        // Larger blocks = better throughput, fewer system calls
         const BLOCK_SIZE: u64 = 1024 * 1024; // 1MB
 
         // Calculate skip in blocks and bytes
@@ -173,16 +332,9 @@ impl SshClient {
 
         let read_blocks = (total_to_read + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-        let dd_cmd = format!(
-            "dd if='{}' bs={} skip={} count={} 2>/dev/null",
-            path,
-            BLOCK_SIZE,
-            skip_blocks,
-            read_blocks
-        );
-
         log::debug!(
-            "SSH dd: {} skip={} count={} (offset={}, len={})",
+            "SSH dd (session #{}): {} skip={} count={} (offset={}, len={})",
+            session_index,
             path,
             skip_blocks,
             read_blocks,
@@ -190,36 +342,15 @@ impl SshClient {
             count_bytes
         );
 
-        let mut child = Command::new("ssh")
-            .arg("-o")
-            .arg("BatchMode=yes")
-            .arg("-o")
-            .arg("StrictHostKeyChecking=no")
-            .arg(&self.ssh_host())
-            .arg(dd_cmd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("failed to spawn ssh dd process")?;
+        // Get a session from the pool
+        let mut session_guard = self.session_pool.get_session(session_index).await?;
+        let session = session_guard.as_mut()
+            .ok_or_else(|| format_err!("failed to get session from pool"))?;
 
-        let mut stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| format_err!("failed to capture stdout"))?;
-
-        let mut buffer = Vec::with_capacity(count_bytes as usize);
-        stdout
-            .read_to_end(&mut buffer)
-            .await
-            .context("failed to read from ssh stdout")?;
-
-        let status = child.wait().await.context("failed to wait for ssh process")?;
-        if !status.success() {
-            bail!("ssh dd command failed with status: {}", status);
-        }
+        // Use the persistent session to read the range
+        let buffer = session.read_range(path, skip_blocks, read_blocks, BLOCK_SIZE).await?;
 
         // Trim buffer to exact byte range requested
-        // If we had a skip_remainder, we read extra bytes at the start
         let trim_start = skip_remainder as usize;
         let trim_end = trim_start + count_bytes as usize;
 

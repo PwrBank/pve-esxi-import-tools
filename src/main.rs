@@ -188,13 +188,13 @@ fn parse_args() -> Result<Option<Args>, Error> {
         args.skip_cert_verification = true;
     }
 
-    // SSH is the default mode for better performance (90 MB/s vs 40 MB/s HTTP)
+    // SSH is the default mode for better performance
     // Use --use-http to explicitly force HTTP mode
     if argparse.contains("--use-http") {
         args.use_ssh = false;
         log::info!("--use-http flag specified - using HTTP mode");
     } else {
-        // Default: SSH mode with key authentication (90 MB/s performance)
+        // Default: SSH mode with key authentication
         args.use_ssh = true;
     }
 
@@ -350,7 +350,7 @@ async fn main_do() -> Result<(), Error> {
 
     let client = if args.use_ssh {
         log::info!(
-            "Attempting SSH+dd streaming mode with {} concurrent connections - 90 MB/s performance",
+            "Attempting SSH+dd streaming mode with {} concurrent connections",
             args.ssh_connections
         );
 
@@ -406,7 +406,7 @@ async fn main_do() -> Result<(), Error> {
             }
         }
     } else {
-        log::info!("Using HTTP API mode (explicitly requested) - 40 MB/s performance");
+        log::info!("Using HTTP API mode (explicitly requested)");
         let mut connector = SslConnector::builder(SslMethod::tls()).unwrap();
         if args.skip_cert_verification {
             connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
