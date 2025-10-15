@@ -455,7 +455,9 @@ pub fn perform_netcat_import(
             .arg("convert")
             .arg("-p")
             .arg("-n")
-            .arg("-f").arg(&src_format_clone)
+            // IMPORTANT: The FIFO contains raw flat VMDK data, not a VMDK descriptor
+            // So we must read it as "raw" format, not "vmdk"
+            .arg("-f").arg("raw")
             .arg("-O").arg(&dst_format_clone);
 
         if let Some(bw) = &bwlimit_clone {
