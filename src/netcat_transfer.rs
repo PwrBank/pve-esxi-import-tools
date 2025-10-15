@@ -11,16 +11,18 @@
 //!
 //! Performance: ~115 MB/s (wire speed on 1 GbE) vs ~76-88 MB/s for HTTP
 
-use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+#![allow(dead_code)] // Module not yet integrated into CLI
+
+use std::io::{self, Read};
+use std::net::TcpListener;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Error, Result};
+use anyhow::{bail, Context, Result};
 
 /// Configuration for a netcat transfer
 #[derive(Debug, Clone)]
@@ -218,7 +220,7 @@ impl NetcatTransfer {
         listener: TcpListener,
         bytes_transferred: Arc<AtomicU64>,
         cancel_flag: Arc<AtomicBool>,
-        config: TransferConfig,
+        _config: TransferConfig,
     ) -> Result<()> {
         // Set accept timeout so we can check cancel flag
         listener.set_nonblocking(false)?;
