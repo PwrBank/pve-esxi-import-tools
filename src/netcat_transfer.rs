@@ -7,7 +7,11 @@
 //! Architecture:
 //! 1. Discovery Phase: Use manifest to find VMs and disk locations
 //! 2. Transfer Phase: Setup netcat listener → SSH to ESXi → dd | pigz | nc
-//! 3. Import Phase: Stream from netcat → pigz -d → qemu-img convert
+//! 3. Import Phase: Direct pipeline: accept connection → pigz -d → qemu-img dd
+//!
+//! Uses `qemu-img dd` instead of `qemu-img convert` because:
+//! - qemu-img dd supports stdin when size is provided via `osize` parameter
+//! - qemu-img convert requires regular files (doesn't work with pipes/FIFOs)
 //!
 //! Performance: ~115 MB/s (wire speed on 1 GbE) vs ~76-88 MB/s for HTTP
 
@@ -361,140 +365,125 @@ pub fn perform_netcat_import(
     eprintln!("Output:    {}", output_path.display());
     eprintln!();
 
-    // 1. Setup netcat listener on random port
-    let listener = TcpListener::bind("0.0.0.0:0")
-        .context("Failed to create netcat listener")?;
-    let local_port = listener.local_addr()?.port();
-
-    eprintln!("✓ Netcat listener on port {}", local_port);
-
-    // Get local IP that ESXi can reach (first non-loopback)
-    let local_ip = get_local_ip()?;
-    eprintln!("✓ Local IP: {}", local_ip);
-
-    // 2. Create a named pipe (FIFO) for qemu-img to read from
-    let fifo_path = format!("/tmp/esxi-netcat-{}.vmdk", local_port);
-    let fifo_path_clone = fifo_path.clone();
-
-    // Clean up any existing FIFO
-    let _ = std::fs::remove_file(&fifo_path);
-
-    // Create FIFO
-    use std::os::unix::fs::DirBuilderExt;
-    let status = Command::new("mkfifo")
-        .arg(&fifo_path)
-        .status()
-        .context("Failed to create FIFO")?;
-
-    if !status.success() {
-        bail!("mkfifo failed");
-    }
-
-    eprintln!("✓ Created FIFO: {}", fifo_path);
-
-    // 3. Accept netcat connection in a thread, write to FIFO
-    let receiver_thread = thread::spawn(move || -> Result<()> {
-        let (mut stream, peer) = listener.accept()
-            .context("Failed to accept connection")?;
-
-        eprintln!("✓ Connection from {}", peer);
-
-        // Open FIFO for writing
-        let fifo_file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&fifo_path_clone)
-            .context("Failed to open FIFO for writing")?;
-
-        // Decompress and write to FIFO
-        let mut decompress_child = Command::new("pigz")
-            .arg("-d")
-            .arg("-c")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::from(fifo_file))
-            .spawn()
-            .context("Failed to spawn pigz decompressor")?;
-
-        let mut decompress_stdin = decompress_child.stdin.take().unwrap();
-
-        // Stream: netcat → pigz -d → FIFO
-        std::io::copy(&mut stream, &mut decompress_stdin)
-            .context("Failed to copy from netcat to pigz")?;
-
-        drop(decompress_stdin);
-
-        let status = decompress_child.wait()
-            .context("Decompressor failed")?;
-
-        if !status.success() {
-            bail!("pigz decompression failed");
-        }
-
-        eprintln!("✓ Decompression complete");
-
-        Ok(())
-    });
-
-    // 4. Start qemu-img reading from FIFO (in a thread so it doesn't block)
-    eprintln!("✓ Starting qemu-img convert...");
-    let fifo_path_for_qemu = fifo_path.clone();
-    let output_path_clone = output_path.to_path_buf();
-    let src_format_clone = src_format.to_string();
-    let dst_format_clone = dst_format.to_string();
-    let bwlimit_clone = bwlimit.map(|s| s.to_string());
-
-    let qemu_thread = thread::spawn(move || -> Result<()> {
-        // Try qemu-img.real first (if wrapper is installed), fall back to qemu-img
-        let qemu_binary = if std::path::Path::new("/usr/bin/qemu-img.real").exists() {
-            "/usr/bin/qemu-img.real"
-        } else {
-            "/usr/bin/qemu-img"
-        };
-
-        let mut qemu_cmd = Command::new(qemu_binary);
-        qemu_cmd
-            .arg("convert")
-            .arg("-p")
-            .arg("-n")
-            // IMPORTANT: The FIFO contains raw flat VMDK data, not a VMDK descriptor
-            // So we must read it as "raw" format, not "vmdk"
-            .arg("-f").arg("raw")
-            .arg("-O").arg(&dst_format_clone);
-
-        if let Some(bw) = &bwlimit_clone {
-            qemu_cmd.arg("-r").arg(format!("{}K", bw));
-        }
-
-        qemu_cmd
-            .arg(&fifo_path_for_qemu)
-            .arg(&output_path_clone)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-
-        eprintln!("✓ qemu-img opening FIFO (this will block until writer starts)...");
-
-        let status = qemu_cmd.status()
-            .context("Failed to execute qemu-img")?;
-
-        if !status.success() {
-            bail!("qemu-img convert failed");
-        }
-
-        Ok(())
-    });
-
-    // Give qemu-img a moment to start and open the FIFO
-    thread::sleep(Duration::from_millis(500));
-
-    // 5. SSH to ESXi and start sender: dd | pigz | nc
-    // IMPORTANT: If this is a VMDK descriptor file, we need to read the -flat.vmdk instead
+    // 1. Detect VMDK descriptor and switch to flat file if needed
     let esxi_read_path = if esxi_disk_path.ends_with(".vmdk") && !esxi_disk_path.ends_with("-flat.vmdk") {
-        // This is a descriptor file, read the flat file instead
         let flat_path = esxi_disk_path.replace(".vmdk", "-flat.vmdk");
         eprintln!("✓ Detected VMDK descriptor, reading flat file instead: {}", flat_path);
         flat_path
     } else {
         esxi_disk_path.to_string()
     };
+
+    // 2. Get file size from ESXi (required for qemu-img dd osize parameter)
+    eprintln!("✓ Getting file size from ESXi...");
+    let size_output = Command::new("ssh")
+        .arg("-o").arg("BatchMode=yes")
+        .arg("-o").arg("StrictHostKeyChecking=no")
+        .arg(format!("{}@{}", esxi_user, esxi_host))
+        .arg(format!("stat -c %s '{}'", esxi_read_path))
+        .output()
+        .context("Failed to get file size from ESXi")?;
+
+    if !size_output.status.success() {
+        let stderr = String::from_utf8_lossy(&size_output.stderr);
+        bail!("Failed to stat file on ESXi: {}", stderr);
+    }
+
+    let file_size: u64 = String::from_utf8(size_output.stdout)
+        .context("Invalid UTF-8 in stat output")?
+        .trim()
+        .parse()
+        .context("Failed to parse file size")?;
+
+    eprintln!("✓ File size: {} bytes ({:.2} GB)", file_size, file_size as f64 / 1024.0 / 1024.0 / 1024.0);
+
+    // 3. Setup netcat listener on random port
+    let listener = TcpListener::bind("0.0.0.0:0")
+        .context("Failed to create netcat listener")?;
+    let local_port = listener.local_addr()?.port();
+
+    eprintln!("✓ Netcat listener on port {}", local_port);
+
+    // Get local IP that ESXi can reach
+    let local_ip = get_local_ip()?;
+    eprintln!("✓ Local IP: {}", local_ip);
+
+    // 4. Start qemu-img dd in background, reading from stdin
+    eprintln!("✓ Starting qemu-img dd...");
+    let qemu_binary = if std::path::Path::new("/usr/bin/qemu-img.real").exists() {
+        "/usr/bin/qemu-img.real"
+    } else {
+        "/usr/bin/qemu-img"
+    };
+
+    let output_path_clone = output_path.to_path_buf();
+    let dst_format_clone = dst_format.to_string();
+    let bwlimit_clone = bwlimit.map(|s| s.to_string());
+
+    // Start the pipeline: accept netcat connection → pigz -d → qemu-img dd
+    let qemu_thread = thread::spawn(move || -> Result<()> {
+        // Accept the netcat connection
+        eprintln!("✓ Waiting for ESXi connection...");
+        let (stream, peer) = listener.accept()
+            .context("Failed to accept connection")?;
+
+        eprintln!("✓ Connection from {}", peer);
+
+        // Convert TcpStream into something we can use with Command
+        use std::os::unix::io::{AsRawFd, FromRawFd};
+        let stream_fd = stream.as_raw_fd();
+
+        // Start pigz decompressor reading from the TCP stream
+        let mut pigz_child = Command::new("pigz")
+            .arg("-d")
+            .arg("-c")
+            .stdin(unsafe { Stdio::from_raw_fd(stream_fd) })
+            .stdout(Stdio::piped())
+            .spawn()
+            .context("Failed to start pigz decompressor")?;
+
+        let pigz_stdout = pigz_child.stdout.take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to capture pigz stdout"))?;
+
+        // Start qemu-img dd reading from pigz stdout
+        let mut qemu_cmd = Command::new(qemu_binary);
+        qemu_cmd
+            .arg("dd")
+            .arg("-f").arg("raw")
+            .arg("-O").arg(&dst_format_clone)
+            .arg(format!("osize={}", file_size))
+            .arg(format!("of={}", output_path_clone.display()))
+            .stdin(Stdio::from(pigz_stdout))
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+
+        if let Some(bw) = &bwlimit_clone {
+            qemu_cmd.arg("-r").arg(format!("{}K", bw));
+        }
+
+        eprintln!("✓ qemu-img dd waiting for data...");
+
+        let status = qemu_cmd.status()
+            .context("Failed to execute qemu-img dd")?;
+
+        if !status.success() {
+            bail!("qemu-img dd failed with status: {}", status);
+        }
+
+        // Wait for pigz to finish
+        let pigz_status = pigz_child.wait()
+            .context("Failed to wait for pigz")?;
+        if !pigz_status.success() {
+            bail!("pigz failed with status: {}", pigz_status);
+        }
+
+        Ok(())
+    });
+
+    // Give pipeline a moment to be ready
+    thread::sleep(Duration::from_millis(500));
+
+    // 5. SSH to ESXi and start sender: dd | pigz | nc
 
     eprintln!("✓ Starting ESXi sender via SSH...");
     let ssh_cmd = format!(
@@ -518,20 +507,11 @@ pub fn perform_netcat_import(
 
     eprintln!("✓ ESXi sender completed");
 
-    // Wait for receiver
-    receiver_thread.join()
-        .map_err(|e| anyhow::anyhow!("Receiver thread panicked: {:?}", e))??;
-
-    eprintln!("✓ Receiver completed");
-
-    // Wait for qemu-img
+    // Wait for qemu-img pipeline to finish
     qemu_thread.join()
-        .map_err(|e| anyhow::anyhow!("qemu-img thread panicked: {:?}", e))??;
+        .map_err(|e| anyhow::anyhow!("qemu-img pipeline thread panicked: {:?}", e))??;
 
-    eprintln!("✓ qemu-img completed");
-
-    // Clean up FIFO
-    let _ = std::fs::remove_file(&fifo_path);
+    eprintln!("✓ qemu-img dd pipeline completed");
 
     eprintln!();
     eprintln!("✓✓✓ Import completed successfully! ✓✓✓");
