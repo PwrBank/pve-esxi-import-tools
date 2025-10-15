@@ -477,10 +477,20 @@ pub fn perform_netcat_import(
     thread::sleep(Duration::from_millis(500));
 
     // 5. SSH to ESXi and start sender: dd | pigz | nc
+    // IMPORTANT: If this is a VMDK descriptor file, we need to read the -flat.vmdk instead
+    let esxi_read_path = if esxi_disk_path.ends_with(".vmdk") && !esxi_disk_path.ends_with("-flat.vmdk") {
+        // This is a descriptor file, read the flat file instead
+        let flat_path = esxi_disk_path.replace(".vmdk", "-flat.vmdk");
+        eprintln!("✓ Detected VMDK descriptor, reading flat file instead: {}", flat_path);
+        flat_path
+    } else {
+        esxi_disk_path.to_string()
+    };
+
     eprintln!("✓ Starting ESXi sender via SSH...");
     let ssh_cmd = format!(
         "dd if='{}' bs=128M | pigz -c | nc {} {}",
-        esxi_disk_path,
+        esxi_read_path,
         local_ip,
         local_port
     );
