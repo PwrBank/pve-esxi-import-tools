@@ -19,6 +19,7 @@ mod client;
 mod esxi;
 mod fs;
 mod manifest;
+mod netcat_transfer;
 mod ssh_client;
 mod vmx;
 

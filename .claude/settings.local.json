@@ -5,7 +5,9 @@
       "Bash(do ssh root@10.10.5.69 \"ssh root@10.10.5.67 \"\"echo ''=== Check $i - GUI Import After Restart ==='' && echo ''SSH connections from Proxmox:'' && esxcli network ip connection list | grep 10.10.5.69 | grep '':22'' | wc -l && echo ''DD processes:'' && ps -c | grep ''dd if='' | wc -l\"\"\")",
       "Bash(git log:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(cargo check:*)"
     ],
     "deny": [],
     "ask": []
