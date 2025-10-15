@@ -26,8 +26,8 @@ use client::DatastoreClient;
 use esxi::EsxiClient;
 use ssh_client::SshClient;
 
-static mut FILE_CACHE_PAGE_SIZE: u64 = 128 << 20;
-static mut FILE_CACHE_PAGE_COUNT: usize = 16;
+static mut FILE_CACHE_PAGE_SIZE: u64 = 64 << 20;  // 64MB blocks for more granular parallelism
+static mut FILE_CACHE_PAGE_COUNT: usize = 24;     // 24 blocks to accommodate more prefetching
 static MANIFEST: OnceLock<manifest::Manifest> = OnceLock::new();
 
 pub fn file_cache_page_size() -> u64 {
