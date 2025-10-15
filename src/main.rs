@@ -26,8 +26,8 @@ use client::DatastoreClient;
 use esxi::EsxiClient;
 use ssh_client::SshClient;
 
-static mut FILE_CACHE_PAGE_SIZE: u64 = 64 << 20;  // 64MB blocks for more granular parallelism
-static mut FILE_CACHE_PAGE_COUNT: usize = 24;     // 24 blocks to accommodate more prefetching
+static mut FILE_CACHE_PAGE_SIZE: u64 = 128 << 20;  // 128MB blocks - optimal balance
+static mut FILE_CACHE_PAGE_COUNT: usize = 20;      // 20 blocks for prefetch window
 static MANIFEST: OnceLock<manifest::Manifest> = OnceLock::new();
 
 pub fn file_cache_page_size() -> u64 {
@@ -239,7 +239,7 @@ fn main() {
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         builder.enable_all();
         builder.max_blocking_threads(2);
-        builder.worker_threads(cpus.clamp(2, 4));
+        builder.worker_threads(cpus.clamp(4, 12));  // Increased for better SSH parallelism
         builder
     });
 
