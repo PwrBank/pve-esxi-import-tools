@@ -434,10 +434,7 @@ pub fn perform_netcat_import(
         Ok(())
     });
 
-    // Give receiver thread a moment to start
-    thread::sleep(Duration::from_millis(500));
-
-    // 4. Start qemu-img reading from FIFO
+    // 4. Start qemu-img reading from FIFO (in a thread so it doesn't block)
     eprintln!("✓ Starting qemu-img convert...");
     let fifo_path_for_qemu = fifo_path.clone();
     let output_path_clone = output_path.to_path_buf();
@@ -464,6 +461,8 @@ pub fn perform_netcat_import(
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
+        eprintln!("✓ qemu-img opening FIFO (this will block until writer starts)...");
+
         let status = qemu_cmd.status()
             .context("Failed to execute qemu-img")?;
 
@@ -474,7 +473,10 @@ pub fn perform_netcat_import(
         Ok(())
     });
 
-    // 4. SSH to ESXi and start sender: dd | pigz | nc
+    // Give qemu-img a moment to start and open the FIFO
+    thread::sleep(Duration::from_millis(500));
+
+    // 5. SSH to ESXi and start sender: dd | pigz | nc
     eprintln!("✓ Starting ESXi sender via SSH...");
     let ssh_cmd = format!(
         "dd if='{}' bs=128M | pigz -c | nc {} {}",
