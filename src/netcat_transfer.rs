@@ -443,7 +443,14 @@ pub fn perform_netcat_import(
     let bwlimit_clone = bwlimit.map(|s| s.to_string());
 
     let qemu_thread = thread::spawn(move || -> Result<()> {
-        let mut qemu_cmd = Command::new("/usr/bin/qemu-img.real");
+        // Try qemu-img.real first (if wrapper is installed), fall back to qemu-img
+        let qemu_binary = if std::path::Path::new("/usr/bin/qemu-img.real").exists() {
+            "/usr/bin/qemu-img.real"
+        } else {
+            "/usr/bin/qemu-img"
+        };
+
+        let mut qemu_cmd = Command::new(qemu_binary);
         qemu_cmd
             .arg("convert")
             .arg("-p")
