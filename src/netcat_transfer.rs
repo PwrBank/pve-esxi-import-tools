@@ -352,9 +352,10 @@ pub fn perform_netcat_import(
     esxi_user: &str,
     esxi_disk_path: &str,
     output_path: &Path,
-    src_format: &str,
+    _src_format: &str,
     dst_format: &str,
     bwlimit: Option<&str>,
+    use_compression: bool,
 ) -> Result<()> {
     use std::process::{Command, Stdio};
     use std::net::TcpListener;
@@ -420,7 +421,7 @@ pub fn perform_netcat_import(
     let dst_format_clone = dst_format.to_string();
     let bwlimit_clone = bwlimit.map(|s| s.to_string());
 
-    // Start the pipeline: accept netcat connection → pigz -d → qemu-img dd
+    // Start the pipeline: accept netcat connection → [pigz -d] → qemu-img dd
     let qemu_thread = thread::spawn(move || -> Result<()> {
         // Accept the netcat connection
         eprintln!("✓ Waiting for ESXi connection...");
@@ -433,48 +434,79 @@ pub fn perform_netcat_import(
         use std::os::unix::io::{AsRawFd, FromRawFd};
         let stream_fd = stream.as_raw_fd();
 
-        // Start pigz decompressor reading from the TCP stream
-        let mut pigz_child = Command::new("pigz")
-            .arg("-d")
-            .arg("-c")
-            .stdin(unsafe { Stdio::from_raw_fd(stream_fd) })
-            .stdout(Stdio::piped())
-            .spawn()
-            .context("Failed to start pigz decompressor")?;
+        if use_compression {
+            // Pipeline: netcat → pigz -d → qemu-img dd
+            eprintln!("✓ Using compressed transfer (pigz)");
 
-        let pigz_stdout = pigz_child.stdout.take()
-            .ok_or_else(|| anyhow::anyhow!("Failed to capture pigz stdout"))?;
+            let mut pigz_child = Command::new("pigz")
+                .arg("-d")
+                .arg("-c")
+                .stdin(unsafe { Stdio::from_raw_fd(stream_fd) })
+                .stdout(Stdio::piped())
+                .spawn()
+                .context("Failed to start pigz decompressor")?;
 
-        // Start qemu-img dd reading from pigz stdout
-        let mut qemu_cmd = Command::new(qemu_binary);
-        qemu_cmd
-            .arg("dd")
-            .arg("-f").arg("raw")
-            .arg("-O").arg(&dst_format_clone)
-            .arg(format!("osize={}", file_size))
-            .arg(format!("of={}", output_path_clone.display()))
-            .stdin(Stdio::from(pigz_stdout))
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
+            let pigz_stdout = pigz_child.stdout.take()
+                .ok_or_else(|| anyhow::anyhow!("Failed to capture pigz stdout"))?;
 
-        if let Some(bw) = &bwlimit_clone {
-            qemu_cmd.arg("-r").arg(format!("{}K", bw));
-        }
+            // Start qemu-img dd reading from pigz stdout
+            let mut qemu_cmd = Command::new(qemu_binary);
+            qemu_cmd
+                .arg("dd")
+                .arg("-f").arg("raw")
+                .arg("-O").arg(&dst_format_clone)
+                .arg(format!("osize={}", file_size))
+                .arg(format!("of={}", output_path_clone.display()))
+                .stdin(Stdio::from(pigz_stdout))
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit());
 
-        eprintln!("✓ qemu-img dd waiting for data...");
+            if let Some(bw) = &bwlimit_clone {
+                qemu_cmd.arg("-r").arg(format!("{}K", bw));
+            }
 
-        let status = qemu_cmd.status()
-            .context("Failed to execute qemu-img dd")?;
+            eprintln!("✓ qemu-img dd waiting for data...");
 
-        if !status.success() {
-            bail!("qemu-img dd failed with status: {}", status);
-        }
+            let status = qemu_cmd.status()
+                .context("Failed to execute qemu-img dd")?;
 
-        // Wait for pigz to finish
-        let pigz_status = pigz_child.wait()
-            .context("Failed to wait for pigz")?;
-        if !pigz_status.success() {
-            bail!("pigz failed with status: {}", pigz_status);
+            if !status.success() {
+                bail!("qemu-img dd failed with status: {}", status);
+            }
+
+            // Wait for pigz to finish
+            let pigz_status = pigz_child.wait()
+                .context("Failed to wait for pigz")?;
+            if !pigz_status.success() {
+                bail!("pigz failed with status: {}", pigz_status);
+            }
+        } else {
+            // Pipeline: netcat → qemu-img dd (no compression)
+            eprintln!("✓ Using uncompressed transfer (no pigz)");
+
+            let mut qemu_cmd = Command::new(qemu_binary);
+            qemu_cmd
+                .arg("dd")
+                .arg("-f").arg("raw")
+                .arg("-O").arg(&dst_format_clone)
+                .arg(format!("osize={}", file_size))
+                .arg(format!("of={}", output_path_clone.display()))
+                .stdin(unsafe { Stdio::from_raw_fd(stream_fd) })
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit());
+
+            if let Some(bw) = &bwlimit_clone {
+                qemu_cmd.arg("-r").arg(format!("{}K", bw));
+            }
+
+            eprintln!("✓ qemu-img dd waiting for data...");
+
+            let status = qemu_cmd.status()
+                .context("Failed to execute qemu-img dd")?;
+
+            if !status.success() {
+                bail!("qemu-img dd failed with status: {}", status);
+            }
         }
 
         Ok(())
@@ -483,15 +515,24 @@ pub fn perform_netcat_import(
     // Give pipeline a moment to be ready
     thread::sleep(Duration::from_millis(500));
 
-    // 5. SSH to ESXi and start sender: dd | pigz | nc
+    // 5. SSH to ESXi and start sender: dd | [pigz] | nc
 
     eprintln!("✓ Starting ESXi sender via SSH...");
-    let ssh_cmd = format!(
-        "dd if='{}' bs=128M | pigz -c | nc {} {}",
-        esxi_read_path,
-        local_ip,
-        local_port
-    );
+    let ssh_cmd = if use_compression {
+        format!(
+            "dd if='{}' bs=128M | pigz -c | nc {} {}",
+            esxi_read_path,
+            local_ip,
+            local_port
+        )
+    } else {
+        format!(
+            "dd if='{}' bs=128M | nc {} {}",
+            esxi_read_path,
+            local_ip,
+            local_port
+        )
+    };
 
     let ssh_status = Command::new("ssh")
         .arg("-o").arg("BatchMode=yes")

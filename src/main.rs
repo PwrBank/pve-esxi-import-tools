@@ -618,6 +618,7 @@ async fn wrap_qemu_img_mode(_args: &Args) -> Result<(), Error> {
                         &src_format,
                         &dst_format,
                         bwlimit.as_deref(),
+                        true, // use_compression
                     ) {
                         Ok(()) => {
                             eprintln!("✓ Netcat import succeeded!");
@@ -688,6 +689,7 @@ async fn direct_import_mode(args: &Args) -> Result<(), Error> {
                     &args.src_format,
                     &args.dst_format,
                     args.bwlimit.as_deref(),
+                    false, // use_compression = false for testing
                 ).context("Netcat import failed");
             }
             Err(e) => {
