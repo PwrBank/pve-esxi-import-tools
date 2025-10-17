@@ -49,7 +49,7 @@ pub struct TransferConfig {
     /// Use compression (pigz) during transfer
     pub use_compression: bool,
 
-    /// Block size for dd command (default: 128M)
+    /// Block size for dd command (default: 16M, optimal for 1GbE)
     pub block_size: String,
 }
 
@@ -62,7 +62,7 @@ impl Default for TransferConfig {
             file_size: 0,
             listen_port: 0,
             use_compression: true,
-            block_size: "128M".to_string(),
+            block_size: "16M".to_string(),  // Optimal for 1GbE network transfers
         }
     }
 }
@@ -582,7 +582,8 @@ pub fn perform_netcat_import(
     use std::net::TcpListener;
 
     // Block size must match between dd sender and qemu-img dd receiver
-    let block_size = block_size.unwrap_or("128M");
+    // 16M is optimal for 1GbE network transfers (balances throughput and memory usage)
+    let block_size = block_size.unwrap_or("16M");
 
     eprintln!("=== Starting Netcat Import ===");
     eprintln!("ESXi Host: {}", esxi_host);
@@ -866,7 +867,7 @@ mod tests {
     fn test_transfer_config_default() {
         let config = TransferConfig::default();
         assert_eq!(config.esxi_user, "root");
-        assert_eq!(config.block_size, "128M");
+        assert_eq!(config.block_size, "16M");  // Optimal for 1GbE network transfers
         assert!(config.use_compression);
     }
 
