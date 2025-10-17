@@ -22,6 +22,7 @@ mod fs;
 mod manifest;
 mod netcat_transfer;
 mod ssh_client;
+mod streaming_fs;
 mod vmx;
 
 use client::DatastoreClient;
@@ -75,7 +76,8 @@ fn usage<W: std::io::Write>(arg0: &OsStr, mut out: W, exit: i32) -> ! {
             --dest=PATH               destination path\n  \
             --src-format=FMT          source format (default: vmdk)\n  \
             --dst-format=FMT          destination format (default: qcow2)\n  \
-            --bwlimit=RATE            bandwidth limit in KiB/s\n\n\
+            --bwlimit=RATE            bandwidth limit in KiB/s\n  \
+            --block-size=SIZE         transfer block size (default: 128M)\n\n\
         General:\n  \
           -v, --version               print the version and exit\n  \
           -h, --help                  print this usage help and exit\n\
@@ -113,6 +115,13 @@ struct Args {
     src_format: String,
     dst_format: String,
     bwlimit: Option<String>,
+    block_size: Option<String>,
+    use_fuse_streaming: bool,
+
+    // Test mode
+    test_fuse: bool,
+    esxi_host_direct: Option<String>,
+    esxi_disk_direct: Option<String>,
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -269,6 +278,24 @@ fn parse_args() -> Result<Option<Args>, Error> {
     if let Some(value) = argparse.opt_value_from_str("--bwlimit")? {
         args.bwlimit = Some(value);
     }
+    if let Some(value) = argparse.opt_value_from_str("--block-size")? {
+        args.block_size = Some(value);
+    }
+
+    if argparse.contains("--use-fuse-streaming") {
+        args.use_fuse_streaming = true;
+    }
+
+    // Test mode
+    if argparse.contains("--test-fuse") {
+        args.test_fuse = true;
+    }
+    if let Some(value) = argparse.opt_value_from_str("--esxi-host")? {
+        args.esxi_host_direct = Some(value);
+    }
+    if let Some(value) = argparse.opt_value_from_str("--esxi-disk")? {
+        args.esxi_disk_direct = Some(value);
+    }
 
     while argparse.contains("--debug") {
         log_filter_level = Some(log::LevelFilter::Debug);
@@ -285,8 +312,8 @@ fn parse_args() -> Result<Option<Args>, Error> {
     )
     .map_err(|err| format_err!("failed to initialize syslog: {err}"))?;
 
-    // Only parse positional args for FUSE mode
-    if args.mode == OperationMode::FuseMount {
+    // Only parse positional args for FUSE mode (and not in test mode)
+    if args.mode == OperationMode::FuseMount && !args.test_fuse {
         args.parse_vec(argparse.finish())?;
     }
 
@@ -365,6 +392,11 @@ async fn main_do() -> Result<(), Error> {
             usage(&arg0, std::io::stderr(), 1);
         }
     };
+
+    // Test mode: Direct FUSE streaming test
+    if args.test_fuse {
+        return test_fuse_mode(&args).await;
+    }
 
     // Handle different operation modes
     match args.mode {
@@ -619,6 +651,7 @@ async fn wrap_qemu_img_mode(_args: &Args) -> Result<(), Error> {
                         &dst_format,
                         bwlimit.as_deref(),
                         true, // use_compression
+                        None, // use default block_size in wrapper mode
                     ) {
                         Ok(()) => {
                             eprintln!("✓ Netcat import succeeded!");
@@ -653,6 +686,53 @@ async fn wrap_qemu_img_mode(_args: &Args) -> Result<(), Error> {
     Ok(())
 }
 
+/// Test streaming mode (both FUSE and dd→qemu-img pipeline)
+async fn test_fuse_mode(args: &Args) -> Result<(), Error> {
+    use std::path::PathBuf;
+
+    let esxi_host = args.esxi_host_direct.as_ref()
+        .ok_or_else(|| format_err!("--esxi-host required for test mode"))?;
+    let esxi_disk = args.esxi_disk_direct.as_ref()
+        .ok_or_else(|| format_err!("--esxi-disk required for test mode"))?;
+    let dest = args.dest_path.as_ref()
+        .ok_or_else(|| format_err!("--dest required for test mode"))?;
+
+    eprintln!("ESXi Host: {}", esxi_host);
+    eprintln!("ESXi Disk: {}", esxi_disk);
+    eprintln!("Destination: {}", dest);
+    eprintln!("Format: {}", args.dst_format);
+    eprintln!();
+
+    // Use --use-fuse-streaming flag to choose between FUSE and dd pipeline
+    if args.use_fuse_streaming {
+        eprintln!("=== FUSE Streaming Test Mode ===\n");
+        netcat_transfer::perform_netcat_import_fuse(
+            esxi_host,
+            "root",
+            esxi_disk,
+            &PathBuf::from(dest),
+            &args.src_format,
+            &args.dst_format,
+            args.bwlimit.as_deref(),
+            false, // no compression for test
+            args.block_size.as_deref(),
+        ).await
+    } else {
+        eprintln!("=== dd → qemu-img Pipeline Test Mode ===\n");
+        netcat_transfer::perform_netcat_import(
+            esxi_host,
+            "root",
+            esxi_disk,
+            &PathBuf::from(dest),
+            &args.src_format,
+            &args.dst_format,
+            args.bwlimit.as_deref(),
+            false, // no compression for test
+            args.block_size.as_deref(),
+        )
+    }
+}
+
 /// Direct import mode: Perform netcat-based import directly
 async fn direct_import_mode(args: &Args) -> Result<(), Error> {
     use std::path::PathBuf;
@@ -681,16 +761,32 @@ async fn direct_import_mode(args: &Args) -> Result<(), Error> {
                 eprintln!("✓ ESXi Host: {}", esxi_info.host);
                 eprintln!("✓ ESXi Disk: {}", esxi_info.disk_path);
 
-                return netcat_transfer::perform_netcat_import(
-                    &esxi_info.host,
-                    &esxi_info.user,
-                    &esxi_info.disk_path,
-                    &PathBuf::from(dest),
-                    &args.src_format,
-                    &args.dst_format,
-                    args.bwlimit.as_deref(),
-                    false, // use_compression = false for testing
-                ).context("Netcat import failed");
+                if args.use_fuse_streaming {
+                    eprintln!("✓ Using FUSE streaming mode");
+                    return netcat_transfer::perform_netcat_import_fuse(
+                        &esxi_info.host,
+                        &esxi_info.user,
+                        &esxi_info.disk_path,
+                        &PathBuf::from(dest),
+                        &args.src_format,
+                        &args.dst_format,
+                        args.bwlimit.as_deref(),
+                        false, // use_compression = false for testing
+                        args.block_size.as_deref(),
+                    ).await.context("FUSE streaming import failed");
+                } else {
+                    return netcat_transfer::perform_netcat_import(
+                        &esxi_info.host,
+                        &esxi_info.user,
+                        &esxi_info.disk_path,
+                        &PathBuf::from(dest),
+                        &args.src_format,
+                        &args.dst_format,
+                        args.bwlimit.as_deref(),
+                        false, // use_compression = false (uncompressed for maximum speed with raw format)
+                        args.block_size.as_deref(),
+                    ).context("Netcat import failed");
+                }
             }
             Err(e) => {
                 eprintln!("⚠ Failed to parse FUSE path: {}", e);

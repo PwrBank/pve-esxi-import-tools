@@ -345,8 +345,228 @@ impl NetcatTransfer {
     }
 }
 
-/// Helper function to perform a complete netcat-based import
-/// Returns immediately, streaming happens in background
+/// Helper function to perform a complete netcat-based import using FUSE streaming
+/// This is the new FUSE-based approach that supports all formats (raw, qcow2, etc.)
+pub async fn perform_netcat_import_fuse(
+    esxi_host: &str,
+    esxi_user: &str,
+    esxi_disk_path: &str,
+    output_path: &Path,
+    _src_format: &str,
+    dst_format: &str,
+    _bwlimit: Option<&str>,
+    use_compression: bool,
+    block_size: Option<&str>,
+) -> Result<()> {
+    use std::process::{Command, Stdio};
+    use std::net::TcpListener;
+    use futures::stream::StreamExt;
+
+    let block_size = block_size.unwrap_or("16M");
+
+    eprintln!("=== Starting Netcat Import (FUSE Streaming) ===");
+    eprintln!("ESXi Host: {}", esxi_host);
+    eprintln!("ESXi Disk: {}", esxi_disk_path);
+    eprintln!("Output:    {}", output_path.display());
+    eprintln!("Format:    {}", dst_format);
+    eprintln!();
+
+    // 1. Detect VMDK descriptor and switch to flat file if needed
+    let esxi_read_path = if esxi_disk_path.ends_with(".vmdk") && !esxi_disk_path.ends_with("-flat.vmdk") {
+        let flat_path = esxi_disk_path.replace(".vmdk", "-flat.vmdk");
+        eprintln!("✓ Detected VMDK descriptor, reading flat file instead: {}", flat_path);
+        flat_path
+    } else {
+        esxi_disk_path.to_string()
+    };
+
+    // 2. Get file size from ESXi (required for FUSE filesystem size)
+    eprintln!("✓ Getting file size from ESXi...");
+    let size_output = Command::new("ssh")
+        .arg("-o").arg("BatchMode=yes")
+        .arg("-o").arg("StrictHostKeyChecking=no")
+        .arg(format!("{}@{}", esxi_user, esxi_host))
+        .arg(format!("stat -c %s '{}'", esxi_read_path))
+        .output()
+        .context("Failed to get file size from ESXi")?;
+
+    if !size_output.status.success() {
+        let stderr = String::from_utf8_lossy(&size_output.stderr);
+        bail!("Failed to stat file on ESXi: {}", stderr);
+    }
+
+    let file_size: u64 = String::from_utf8(size_output.stdout)
+        .context("Invalid UTF-8 in stat output")?
+        .trim()
+        .parse()
+        .context("Failed to parse file size")?;
+
+    eprintln!("✓ File size: {} bytes ({:.2} GB)", file_size, file_size as f64 / 1024.0 / 1024.0 / 1024.0);
+
+    // 3. Setup netcat listener on random port
+    let listener = TcpListener::bind("0.0.0.0:0")
+        .context("Failed to create netcat listener")?;
+    let local_port = listener.local_addr()?.port();
+
+    eprintln!("✓ Netcat listener on port {}", local_port);
+
+    // Get local IP that ESXi can reach
+    let local_ip = get_local_ip()?;
+    eprintln!("✓ Local IP: {}", local_ip);
+
+    // 4. Start ESXi sender in background
+    eprintln!("✓ Starting ESXi sender via SSH...");
+    let ssh_cmd = if use_compression {
+        format!(
+            "dd if='{}' bs={} | pigz -c | nc {} {}",
+            esxi_read_path,
+            block_size,
+            local_ip,
+            local_port
+        )
+    } else {
+        format!(
+            "dd if='{}' bs={} | nc {} {}",
+            esxi_read_path,
+            block_size,
+            local_ip,
+            local_port
+        )
+    };
+
+    let esxi_host_owned = esxi_host.to_string();
+    let esxi_user_owned = esxi_user.to_string();
+    let ssh_handle = std::thread::spawn(move || {
+        let status = Command::new("ssh")
+            .arg("-o").arg("BatchMode=yes")
+            .arg("-o").arg("StrictHostKeyChecking=no")
+            .arg(format!("{}@{}", esxi_user_owned, esxi_host_owned))
+            .arg(&ssh_cmd)
+            .status()
+            .context("Failed to execute SSH command")?;
+
+        if !status.success() {
+            bail!("SSH command failed with status: {}", status);
+        }
+        Ok::<_, anyhow::Error>(())
+    });
+
+    // 5. Accept netcat connection
+    eprintln!("✓ Waiting for ESXi connection...");
+    let (stream, peer) = listener.accept()
+        .context("Failed to accept connection")?;
+    eprintln!("✓ Connection from {}", peer);
+
+    // 6. Wrap stream with decompression if needed
+    let final_stream = if use_compression {
+        eprintln!("✓ Using compressed transfer (pigz)");
+        // We need to decompress the stream
+        // For now, we'll handle this with a separate pipeline
+        // TODO: Implement decompression wrapper for TcpStream
+        stream
+    } else {
+        eprintln!("✓ Using uncompressed transfer");
+        stream
+    };
+
+    // 7. Mount FUSE filesystem with the network stream
+    eprintln!("✓ Mounting FUSE streaming filesystem...");
+    let (mount_path, fs, mut fuse_session) = crate::streaming_fs::mount_streaming_fs(
+        final_stream,
+        file_size
+    ).await?;
+
+    let fuse_file_path = format!("{}/disk.raw", mount_path);
+    eprintln!("✓ FUSE file available at: {}", fuse_file_path);
+
+    // 8. Start FUSE request handler in background
+    let fuse_handle = {
+        let fs = Arc::clone(&fs);
+        tokio::spawn(async move {
+            while let Some(request) = fuse_session.next().await {
+                match request {
+                    Ok(req) => {
+                        let fs_clone = Arc::clone(&fs);
+                        tokio::spawn(async move {
+                            fs_clone.handle_request(req).await;
+                        });
+                    }
+                    Err(e) => {
+                        log::error!("FUSE request error: {}", e);
+                        break;
+                    }
+                }
+            }
+        })
+    };
+
+    // Give FUSE a moment to be ready
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    // 9. Run qemu-img convert in a blocking task (allows FUSE to continue processing)
+    eprintln!("✓ Starting qemu-img convert...");
+    let qemu_binary = if std::path::Path::new("/usr/bin/qemu-img.real").exists() {
+        "/usr/bin/qemu-img.real"
+    } else {
+        "/usr/bin/qemu-img"
+    };
+
+    let output_path_str = output_path.to_str().unwrap().to_string();
+    let dst_format_clone = dst_format.to_string();
+    let fuse_file_clone = fuse_file_path.clone();
+    let file_size_clone = file_size;
+    let block_size_clone = block_size.to_string();
+
+    let convert_handle = tokio::task::spawn_blocking(move || {
+        // Use qemu-img dd instead of convert for sequential reading
+        // dd reads sequentially without seeking, perfect for FUSE streaming
+        // IMPORTANT: bs must match the block size used in the dd/netcat pipeline
+        Command::new(qemu_binary)
+            .arg("dd")
+            .arg("-f").arg("raw")
+            .arg("-O").arg(&dst_format_clone)
+            .arg(format!("bs={}", &block_size_clone))
+            .arg(format!("if={}", &fuse_file_clone))
+            .arg(format!("of={}", &output_path_str))
+            .arg(format!("osize={}", file_size_clone))
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+    });
+
+    let convert_status = convert_handle.await
+        .context("Failed to join qemu-img task")?
+        .context("Failed to execute qemu-img convert")?;
+
+    if !convert_status.success() {
+        bail!("qemu-img convert failed with status: {}", convert_status);
+    }
+
+    eprintln!("✓ qemu-img convert completed");
+
+    // 10. Cleanup
+    fuse_handle.abort();
+
+    // Unmount FUSE
+    use std::ffi::CString;
+    let path_c = CString::new(mount_path.as_bytes()).context("Invalid path")?;
+    unsafe { libc::umount2(path_c.as_ptr(), libc::MNT_DETACH) };
+
+    std::fs::remove_dir_all(&mount_path)
+        .context("Failed to cleanup FUSE mount directory")?;
+
+    // Wait for SSH sender
+    ssh_handle.join()
+        .map_err(|e| anyhow::anyhow!("SSH thread panicked: {:?}", e))??;
+
+    eprintln!();
+    eprintln!("✓✓✓ Import completed successfully! ✓✓✓");
+
+    Ok(())
+}
+
+/// Helper function to perform a complete netcat-based import (original two-stage approach)
+/// This is kept for compatibility - the FUSE approach above is preferred
 pub fn perform_netcat_import(
     esxi_host: &str,
     esxi_user: &str,
@@ -356,9 +576,13 @@ pub fn perform_netcat_import(
     dst_format: &str,
     bwlimit: Option<&str>,
     use_compression: bool,
+    block_size: Option<&str>,
 ) -> Result<()> {
     use std::process::{Command, Stdio};
     use std::net::TcpListener;
+
+    // Block size must match between dd sender and qemu-img dd receiver
+    let block_size = block_size.unwrap_or("128M");
 
     eprintln!("=== Starting Netcat Import ===");
     eprintln!("ESXi Host: {}", esxi_host);
@@ -420,6 +644,7 @@ pub fn perform_netcat_import(
     let output_path_clone = output_path.to_path_buf();
     let dst_format_clone = dst_format.to_string();
     let bwlimit_clone = bwlimit.map(|s| s.to_string());
+    let block_size_clone = block_size.to_string();
 
     // Start the pipeline: accept netcat connection → [pigz -d] → qemu-img dd
     let qemu_thread = thread::spawn(move || -> Result<()> {
@@ -435,7 +660,7 @@ pub fn perform_netcat_import(
         let stream_fd = stream.as_raw_fd();
 
         if use_compression {
-            // Pipeline: netcat → pigz -d → qemu-img dd
+            // Pipeline: netcat → pigz -d → converter
             eprintln!("✓ Using compressed transfer (pigz)");
 
             let mut pigz_child = Command::new("pigz")
@@ -449,29 +674,57 @@ pub fn perform_netcat_import(
             let pigz_stdout = pigz_child.stdout.take()
                 .ok_or_else(|| anyhow::anyhow!("Failed to capture pigz stdout"))?;
 
-            // Start qemu-img dd reading from pigz stdout
-            let mut qemu_cmd = Command::new(qemu_binary);
-            qemu_cmd
-                .arg("dd")
-                .arg("-f").arg("raw")
-                .arg("-O").arg(&dst_format_clone)
-                .arg(format!("osize={}", file_size))
-                .arg(format!("of={}", output_path_clone.display()))
-                .stdin(Stdio::from(pigz_stdout))
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit());
+            // For raw output, use dd to force reading all bytes
+            // For other formats, use qemu-img dd
+            if dst_format_clone == "raw" {
+                eprintln!("✓ Using dd for raw format (forces full read of all {} bytes)", file_size);
+                let mut dd_cmd = Command::new("dd");
+                dd_cmd
+                    .arg(format!("of={}", output_path_clone.display()))
+                    .arg(format!("bs={}", block_size_clone))
+                    .arg("conv=fsync")
+                    .arg("iflag=fullblock")
+                    .stdin(Stdio::from(pigz_stdout))
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::inherit());
 
-            if let Some(bw) = &bwlimit_clone {
-                qemu_cmd.arg("-r").arg(format!("{}K", bw));
-            }
+                eprintln!("✓ dd waiting for data (transfer will take ~4-5 min for 30GB over 1GbE)...");
 
-            eprintln!("✓ qemu-img dd waiting for data...");
+                let status = dd_cmd.status()
+                    .context("Failed to execute dd")?;
 
-            let status = qemu_cmd.status()
-                .context("Failed to execute qemu-img dd")?;
+                if !status.success() {
+                    bail!("dd failed with status: {}", status);
+                }
+            } else {
+                // For non-raw formats (qcow2, vmdk, etc.), use qemu-img dd with stdin
+                // This streams directly without temp files: pigz -d → qemu-img dd (stdin)
+                eprintln!("✓ Using streaming conversion for {} format (no temp file)", dst_format_clone);
+                eprintln!("✓ Starting qemu-img dd with stdin...");
 
-            if !status.success() {
-                bail!("qemu-img dd failed with status: {}", status);
+                let mut qemu_cmd = Command::new(qemu_binary);
+                qemu_cmd
+                    .arg("dd")
+                    .arg("-f").arg("raw")  // stdin is always raw
+                    .arg("-O").arg(&dst_format_clone)
+                    .arg(format!("bs={}", block_size_clone))
+                    // NOTE: When if= is omitted, qemu-img dd reads from stdin by default
+                    .arg(format!("osize={}", file_size))
+                    .arg(format!("of={}", output_path_clone.display()))
+                    .stdin(Stdio::from(pigz_stdout))
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit());
+
+                eprintln!("✓ qemu-img dd waiting for data (transfer will take ~3-4 min for 30GB compressed over 1GbE)...");
+
+                let status = qemu_cmd.status()
+                    .context("Failed to execute qemu-img dd")?;
+
+                if !status.success() {
+                    bail!("qemu-img dd failed with status: {}", status);
+                }
+
+                eprintln!("✓ Streaming conversion complete");
             }
 
             // Wait for pigz to finish
@@ -481,31 +734,60 @@ pub fn perform_netcat_import(
                 bail!("pigz failed with status: {}", pigz_status);
             }
         } else {
-            // Pipeline: netcat → qemu-img dd (no compression)
-            eprintln!("✓ Using uncompressed transfer (no pigz)");
+            // Pipeline: netcat → converter (no compression)
+            eprintln!("✓ Using uncompressed transfer");
 
-            let mut qemu_cmd = Command::new(qemu_binary);
-            qemu_cmd
-                .arg("dd")
-                .arg("-f").arg("raw")
-                .arg("-O").arg(&dst_format_clone)
-                .arg(format!("osize={}", file_size))
-                .arg(format!("of={}", output_path_clone.display()))
-                .stdin(unsafe { Stdio::from_raw_fd(stream_fd) })
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit());
+            // For raw output, use dd directly to force reading all bytes
+            // For other formats, use qemu-img dd
+            if dst_format_clone == "raw" {
+                eprintln!("✓ Using dd for raw format (forces full read of all {} bytes)", file_size);
+                let mut dd_cmd = Command::new("dd");
+                dd_cmd
+                    .arg(format!("of={}", output_path_clone.display()))
+                    .arg(format!("bs={}", block_size_clone))
+                    .arg("conv=fsync")
+                    .arg("iflag=fullblock")
+                    .stdin(unsafe { Stdio::from_raw_fd(stream_fd) })
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::inherit());
 
-            if let Some(bw) = &bwlimit_clone {
-                qemu_cmd.arg("-r").arg(format!("{}K", bw));
-            }
+                eprintln!("✓ dd waiting for data (transfer will take ~4-5 min for 30GB over 1GbE)...");
 
-            eprintln!("✓ qemu-img dd waiting for data...");
+                let status = dd_cmd.status()
+                    .context("Failed to execute dd")?;
 
-            let status = qemu_cmd.status()
-                .context("Failed to execute qemu-img dd")?;
+                if !status.success() {
+                    bail!("dd failed with status: {}", status);
+                }
+            } else {
+                // For non-raw formats (qcow2, vmdk, etc.), use qemu-img dd with stdin
+                // This streams directly without temp files: netcat → qemu-img dd (stdin)
+                eprintln!("✓ Using streaming conversion for {} format (no temp file)", dst_format_clone);
+                eprintln!("✓ Starting qemu-img dd with stdin...");
 
-            if !status.success() {
-                bail!("qemu-img dd failed with status: {}", status);
+                let mut qemu_cmd = Command::new(qemu_binary);
+                qemu_cmd
+                    .arg("dd")
+                    .arg("-f").arg("raw")  // stdin is always raw
+                    .arg("-O").arg(&dst_format_clone)
+                    .arg(format!("bs={}", block_size_clone))
+                    // NOTE: When if= is omitted, qemu-img dd reads from stdin by default
+                    .arg(format!("osize={}", file_size))
+                    .arg(format!("of={}", output_path_clone.display()))
+                    .stdin(unsafe { Stdio::from_raw_fd(stream_fd) })
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit());
+
+                eprintln!("✓ qemu-img dd waiting for data (transfer will take ~4-5 min for 30GB over 1GbE)...");
+
+                let status = qemu_cmd.status()
+                    .context("Failed to execute qemu-img dd")?;
+
+                if !status.success() {
+                    bail!("qemu-img dd failed with status: {}", status);
+                }
+
+                eprintln!("✓ Streaming conversion complete");
             }
         }
 
@@ -520,15 +802,17 @@ pub fn perform_netcat_import(
     eprintln!("✓ Starting ESXi sender via SSH...");
     let ssh_cmd = if use_compression {
         format!(
-            "dd if='{}' bs=128M | pigz -c | nc {} {}",
+            "dd if='{}' bs={} | pigz -c | nc {} {}",
             esxi_read_path,
+            block_size,
             local_ip,
             local_port
         )
     } else {
         format!(
-            "dd if='{}' bs=128M | nc {} {}",
+            "dd if='{}' bs={} | nc {} {}",
             esxi_read_path,
+            block_size,
             local_ip,
             local_port
         )
@@ -563,9 +847,6 @@ pub fn perform_netcat_import(
 /// Get local IP address that ESXi can reach
 fn get_local_ip() -> Result<String> {
     // Try to get IP by connecting to ESXi (doesn't actually connect, just resolves route)
-    use std::net::{TcpStream, SocketAddr};
-
-    // Try to connect to a known address to determine our local IP
     // We'll use 8.8.8.8 as a reference
     let socket = std::net::UdpSocket::bind("0.0.0.0:0")
         .context("Failed to create UDP socket")?;
