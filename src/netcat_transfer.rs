@@ -545,17 +545,25 @@ pub async fn perform_netcat_import_fuse(
     eprintln!("✓ qemu-img convert completed");
 
     // 10. Cleanup
+    // Print seek statistics before cleanup
+    fs.print_seek_statistics();
+
+    // Abort the FUSE handler task - this automatically drops the fuse_session
+    // and unmounts the filesystem
     fuse_handle.abort();
 
-    // Unmount FUSE
-    use std::ffi::CString;
-    let path_c = CString::new(mount_path.as_bytes()).context("Invalid path")?;
-    unsafe { libc::umount2(path_c.as_ptr(), libc::MNT_DETACH) };
+    // Drop the filesystem Arc to release the TcpStream
+    // This closes the TCP connection which signals netcat on ESXi to exit
+    drop(fs);
 
+    // Give the stream and SSH connection time to close gracefully
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    // Remove temporary directory (FUSE is already unmounted by abort)
     std::fs::remove_dir_all(&mount_path)
         .context("Failed to cleanup FUSE mount directory")?;
 
-    // Wait for SSH sender
+    // Wait for SSH sender thread to complete (should be quick now that TCP is closed)
     ssh_handle.join()
         .map_err(|e| anyhow::anyhow!("SSH thread panicked: {:?}", e))??;
 

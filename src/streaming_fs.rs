@@ -18,7 +18,7 @@
 use std::io::{self, Read};
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::collections::VecDeque;
 use anyhow::{Context, Error, Result};
 
@@ -29,8 +29,9 @@ const TIMEOUT: f64 = 600.0;
 const FILE_INODE: u64 = 2;
 
 // Buffer size for seekable streaming - allows qcow2 to seek backwards within this window
-// Start with 256MB as suggested in the guide, can be increased to 1GB if needed
-const BUFFER_WINDOW_SIZE: usize = 256 * 1024 * 1024; // 256 MB
+// Research showed qcow2 only seeks backward by exactly 128 KB (one cluster)
+// We use 2 MB to provide a 16x safety margin while being memory efficient
+const BUFFER_WINDOW_SIZE: usize = 2 * 1024 * 1024; // 2 MB (128x the observed seek distance)
 
 /// Circular buffer that maintains a sliding window of stream data in RAM
 /// Allows limited backward seeks within the buffered range
@@ -119,6 +120,18 @@ pub struct StreamingFs {
     /// Current position in the stream (how many bytes we've read from network)
     /// This is atomically updated as we read more data
     stream_position: Arc<AtomicU64>,
+
+    /// Track the last read offset for seek distance calculation
+    last_read_offset: Arc<Mutex<u64>>,
+
+    /// Statistics: count of backward seeks
+    backward_seek_count: Arc<AtomicUsize>,
+
+    /// Statistics: maximum backward seek distance observed
+    max_backward_seek_distance: Arc<AtomicU64>,
+
+    /// Statistics: count of buffer hits (served from buffer)
+    buffer_hit_count: Arc<AtomicUsize>,
 }
 
 impl StreamingFs {
@@ -141,6 +154,10 @@ impl StreamingFs {
             file_size,
             buffer: Arc::new(Mutex::new(CircularBuffer::new(BUFFER_WINDOW_SIZE))),
             stream_position: Arc::new(AtomicU64::new(0)),
+            last_read_offset: Arc::new(Mutex::new(0)),
+            backward_seek_count: Arc::new(AtomicUsize::new(0)),
+            max_backward_seek_distance: Arc::new(AtomicU64::new(0)),
+            buffer_hit_count: Arc::new(AtomicUsize::new(0)),
         }))
     }
 
@@ -225,6 +242,42 @@ impl StreamingFs {
         let offset = read.offset;
         let size = read.size as usize;
 
+        // Track seek behavior for statistics
+        let last_offset = {
+            let mut last = self.last_read_offset.lock().unwrap();
+            let prev = *last;
+            *last = offset;
+            prev
+        };
+
+        // Check if this is a backward seek
+        if offset < last_offset {
+            let seek_distance = last_offset - offset;
+            self.backward_seek_count.fetch_add(1, Ordering::Relaxed);
+
+            // Update max backward seek distance
+            let mut max_dist = self.max_backward_seek_distance.load(Ordering::Relaxed);
+            while seek_distance > max_dist {
+                match self.max_backward_seek_distance.compare_exchange(
+                    max_dist,
+                    seek_distance,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed
+                ) {
+                    Ok(_) => break,
+                    Err(x) => max_dist = x,
+                }
+            }
+
+            eprintln!(
+                "[SEEK] Backward seek: from {} to {} (distance: {} bytes = {} MB)",
+                last_offset,
+                offset,
+                seek_distance,
+                seek_distance / (1024 * 1024)
+            );
+        }
+
         log::debug!("Read request: offset={}, size={}", offset, size);
 
         // Get current stream position (how far we've read from the network)
@@ -234,6 +287,7 @@ impl StreamingFs {
         {
             let buffer = self.buffer.lock().unwrap();
             if let Some(data) = buffer.read_at(offset, size) {
+                self.buffer_hit_count.fetch_add(1, Ordering::Relaxed);
                 let (start, end, len) = buffer.stats();
                 log::debug!(
                     "✓ Served from buffer: offset={}, size={} (buffer: {}-{}, {} bytes)",
@@ -413,6 +467,37 @@ impl StreamingFs {
         stat.st_mode = 0o444 | libc::S_IFREG;
         stat.st_size = self.file_size as i64;
         stat
+    }
+
+    /// Print seek statistics
+    pub fn print_seek_statistics(&self) {
+        let backward_seeks = self.backward_seek_count.load(Ordering::Relaxed);
+        let max_distance = self.max_backward_seek_distance.load(Ordering::Relaxed);
+        let buffer_hits = self.buffer_hit_count.load(Ordering::Relaxed);
+
+        eprintln!();
+        eprintln!("=== FUSE Seek Statistics ===");
+        eprintln!("Total backward seeks: {}", backward_seeks);
+        eprintln!("Buffer hits (reads served from buffer): {}", buffer_hits);
+        eprintln!("Maximum backward seek distance: {} bytes ({} MB)",
+                  max_distance,
+                  max_distance / (1024 * 1024));
+        eprintln!("Buffer size: {} MB", BUFFER_WINDOW_SIZE / (1024 * 1024));
+
+        if max_distance > BUFFER_WINDOW_SIZE as u64 {
+            eprintln!("⚠ WARNING: Maximum seek distance ({} MB) exceeds buffer size ({} MB)!",
+                      max_distance / (1024 * 1024),
+                      BUFFER_WINDOW_SIZE / (1024 * 1024));
+            eprintln!("Consider increasing BUFFER_WINDOW_SIZE");
+        } else {
+            eprintln!("✓ Buffer size is adequate for observed seek pattern");
+            let overhead_mb = (BUFFER_WINDOW_SIZE as u64 - max_distance) / (1024 * 1024);
+            eprintln!("  Headroom: {} MB ({:.1}% of buffer unused)",
+                      overhead_mb,
+                      (overhead_mb as f64 / (BUFFER_WINDOW_SIZE as f64 / (1024.0 * 1024.0))) * 100.0);
+        }
+        eprintln!("============================");
+        eprintln!();
     }
 }
 

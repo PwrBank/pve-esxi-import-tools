@@ -16,7 +16,9 @@
       "Bash(for file in 957ab24f-99f1-4e91-82fe-541f10f316a0.jsonl 8d6d4d2c-afb7-4e06-a1a7-03b8db42eac0.jsonl 6a51e9d4-9d77-40fa-8e20-672790cfce91.jsonl 2b34cc31-40bf-4c2d-81aa-ba3c9518316e.jsonl bb691bf5-6dd4-4991-802d-450b532e95c2.jsonl de7bc4bf-6fe4-4306-bd41-055915cb9502.jsonl b38de717-5331-4a94-818f-0396466b3e43.jsonl)",
       "Bash(do echo \"===== $file =====\")",
       "Bash(done)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(for i in 1 2 3 4)",
+      "Bash(do sleep 60)"
     ],
     "deny": [],
     "ask": []
