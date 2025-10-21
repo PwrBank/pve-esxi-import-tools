@@ -1,10 +1,13 @@
 #### Machines
 Both the ESXi and Proxmox have the exact same hardware
 
-CPU: 2x AMD EPYC 7252 
-RAM: 128GB
-Network: Intel E810-XXV 25GbE
-Storage: Samsung MZPLL1T6HEHP
+**CPU:** 2x AMD EPYC 7252 
+
+**RAM:** 128GB
+
+**Network:** Intel E810-XXV 25GbE
+
+**Storage:** Samsung MZPLL1T6HEHP
 
 VM on the ESXi server is hitting the limits of what the SSD can do
 
