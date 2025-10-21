@@ -492,4 +492,404 @@ The FUSE streaming architecture successfully solves the qcow2 conversion problem
 
 ---
 
+## Simultaneous VM Imports Architecture
+
+### Current Status: Single-Transfer Design
+
+The current implementation processes one VM import at a time. Each call to `perform_netcat_import_fuse()` is a blocking operation that runs from start to completion before returning control.
+
+### Why Simultaneous Imports Are Feasible
+
+The architecture is **already concurrent-ready** thanks to:
+
+1. **Random Port Allocation**: Each transfer auto-selects a unique port via `TcpListener::bind("0.0.0.0:0")`
+2. **Isolated FUSE Mounts**: Each transfer creates a unique mount point: `/tmp/netcat-stream-{pid}/`
+3. **Memory Efficient**: 2MB buffer per transfer means 50 concurrent imports = only 100MB RAM
+4. **No Shared State**: Transfers are completely independent with no resource conflicts
+5. **Independent SSH Connections**: Each transfer maintains its own SSH session to ESXi
+
+### Changes Required for Concurrent Imports
+
+#### 1. Refactor Transfer Function to Return Handle
+
+**Current (Blocking):**
+```rust
+// netcat_transfer.rs:350
+pub async fn perform_netcat_import_fuse(...) -> Result<()> {
+    // ... setup ...
+    let convert_status = convert_handle.await?;  // Blocks here
+    // ... cleanup ...
+    Ok(())
+}
+```
+
+**Proposed (Non-Blocking):**
+```rust
+pub struct TransferHandle {
+    transfer_id: String,
+    vm_name: String,
+    mount_path: PathBuf,
+    fuse_handle: tokio::task::JoinHandle<()>,
+    ssh_handle: std::thread::JoinHandle<Result<()>>,
+    convert_handle: tokio::task::JoinHandle<Result<ExitStatus>>,
+    fs: Arc<StreamingFs>,
+    start_time: Instant,
+}
+
+impl TransferHandle {
+    /// Get current transfer progress
+    pub fn progress(&self) -> TransferProgress {
+        TransferProgress {
+            vm_name: self.vm_name.clone(),
+            bytes_transferred: self.fs.stream_position.load(Ordering::Relaxed),
+            total_bytes: self.fs.file_size,
+            elapsed: self.start_time.elapsed(),
+        }
+    }
+
+    /// Check if transfer is complete
+    pub fn is_complete(&self) -> bool {
+        self.convert_handle.is_finished()
+    }
+
+    /// Wait for transfer to complete
+    pub async fn wait(self) -> Result<()> {
+        // Wait for qemu-img to finish
+        self.convert_handle.await??;
+
+        // Cleanup (abort FUSE, wait for SSH, remove mount)
+        self.fuse_handle.abort();
+        drop(self.fs);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        std::fs::remove_dir_all(&self.mount_path)?;
+        self.ssh_handle.join()??;
+
+        Ok(())
+    }
+
+    /// Cancel an in-progress transfer
+    pub fn cancel(&self) {
+        self.convert_handle.abort();
+        self.fuse_handle.abort();
+        // SSH process will terminate when TCP connection closes
+    }
+}
+
+pub async fn start_netcat_import_fuse(...) -> Result<TransferHandle> {
+    // Setup everything but don't await completion
+    // Return handle immediately after qemu-img starts
+
+    Ok(TransferHandle {
+        transfer_id: format!("import-{}", process::id()),
+        vm_name: extract_vm_name(esxi_disk_path),
+        mount_path,
+        fuse_handle,
+        ssh_handle,
+        convert_handle,
+        fs,
+        start_time: Instant::now(),
+    })
+}
+```
+
+#### 2. Add Import Manager for Coordination
+
+```rust
+pub struct ImportManager {
+    active_transfers: Arc<Mutex<HashMap<String, TransferHandle>>>,
+    max_concurrent: usize,
+    completed: Arc<Mutex<Vec<ImportResult>>>,
+}
+
+impl ImportManager {
+    pub fn new(max_concurrent: usize) -> Self {
+        Self {
+            active_transfers: Arc::new(Mutex::new(HashMap::new())),
+            max_concurrent,
+            completed: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Start a new import, respecting concurrency limits
+    pub async fn start_import(&self, config: ImportConfig) -> Result<String> {
+        // Wait if at max concurrent transfers
+        while self.active_transfers.lock().unwrap().len() >= self.max_concurrent {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            self.reap_completed().await;
+        }
+
+        let handle = start_netcat_import_fuse(
+            &config.esxi_host,
+            &config.esxi_user,
+            &config.disk_path,
+            &config.output_path,
+            &config.src_format,
+            &config.dst_format,
+            config.bwlimit.as_deref(),
+            config.use_compression,
+            config.block_size.as_deref(),
+        ).await?;
+
+        let transfer_id = handle.transfer_id.clone();
+        self.active_transfers.lock().unwrap().insert(transfer_id.clone(), handle);
+
+        Ok(transfer_id)
+    }
+
+    /// Check for completed transfers and move them to completed list
+    async fn reap_completed(&self) {
+        let mut active = self.active_transfers.lock().unwrap();
+        let mut completed = self.completed.lock().unwrap();
+
+        let finished: Vec<String> = active.iter()
+            .filter(|(_, h)| h.is_complete())
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in finished {
+            if let Some(handle) = active.remove(&id) {
+                let result = handle.wait().await;
+                completed.push(ImportResult {
+                    transfer_id: id,
+                    vm_name: handle.vm_name,
+                    result,
+                    completed_at: Instant::now(),
+                });
+            }
+        }
+    }
+
+    /// Get progress for all active transfers
+    pub fn get_all_progress(&self) -> Vec<TransferProgress> {
+        self.active_transfers.lock().unwrap()
+            .values()
+            .map(|h| h.progress())
+            .collect()
+    }
+
+    /// Wait for all transfers to complete
+    pub async fn wait_all(self) -> Result<Vec<ImportResult>> {
+        let handles: Vec<_> = self.active_transfers.lock().unwrap()
+            .drain()
+            .map(|(_, h)| h)
+            .collect();
+
+        for handle in handles {
+            let result = handle.wait().await;
+            self.completed.lock().unwrap().push(ImportResult {
+                transfer_id: handle.transfer_id,
+                vm_name: handle.vm_name,
+                result,
+                completed_at: Instant::now(),
+            });
+        }
+
+        Ok(self.completed.lock().unwrap().clone())
+    }
+}
+```
+
+#### 3. Add Batch Import Mode to CLI
+
+**Command Line Interface:**
+```bash
+# Import multiple VMs concurrently
+./esxi-folder-fuse --batch-import \
+  --import-list vms.json \
+  --max-concurrent 5 \
+  --continue-on-error
+
+# Import list format (vms.json):
+[
+  {
+    "name": "WebServer01",
+    "esxi_host": "10.10.5.67",
+    "disk_path": "/vmfs/volumes/local/WebServer01/WebServer01.vmdk",
+    "output_path": "/mnt/proxmox/WebServer01.qcow2"
+  },
+  {
+    "name": "Database01",
+    "esxi_host": "10.10.5.67",
+    "disk_path": "/vmfs/volumes/local/Database01/Database01.vmdk",
+    "output_path": "/mnt/proxmox/Database01.qcow2"
+  }
+]
+```
+
+**Implementation in main.rs:**
+```rust
+async fn batch_import_mode(args: &Args) -> Result<()> {
+    let import_list: Vec<ImportConfig> =
+        serde_json::from_str(&std::fs::read_to_string(&args.import_list_file)?)?;
+
+    eprintln!("=== Batch Import Mode ===");
+    eprintln!("VMs to import: {}", import_list.len());
+    eprintln!("Max concurrent: {}", args.max_concurrent);
+    eprintln!();
+
+    let manager = ImportManager::new(args.max_concurrent);
+
+    // Start all imports
+    for config in import_list {
+        match manager.start_import(config.clone()).await {
+            Ok(id) => eprintln!("✓ Started import: {} (ID: {})", config.name, id),
+            Err(e) => {
+                if args.continue_on_error {
+                    eprintln!("⚠ Failed to start {}: {}", config.name, e);
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    // Monitor progress
+    let monitor_handle = tokio::spawn(async move {
+        loop {
+            let progress = manager.get_all_progress();
+            for p in &progress {
+                let pct = (p.bytes_transferred as f64 / p.total_bytes as f64) * 100.0;
+                let rate = p.bytes_transferred / p.elapsed.as_secs().max(1);
+                eprintln!("{}: {:.1}% ({} MB/s)",
+                    p.vm_name, pct, rate / 1024 / 1024);
+            }
+            if progress.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
+
+    // Wait for all to complete
+    let results = manager.wait_all().await?;
+    monitor_handle.await?;
+
+    // Print summary
+    eprintln!("\n=== Import Summary ===");
+    let successful = results.iter().filter(|r| r.result.is_ok()).count();
+    let failed = results.iter().filter(|r| r.result.is_err()).count();
+    eprintln!("Successful: {}", successful);
+    eprintln!("Failed: {}", failed);
+
+    for result in &results {
+        match &result.result {
+            Ok(_) => eprintln!("✓ {}: Success", result.vm_name),
+            Err(e) => eprintln!("✗ {}: {}", result.vm_name, e),
+        }
+    }
+
+    if failed > 0 && !args.continue_on_error {
+        bail!("{} imports failed", failed);
+    }
+
+    Ok(())
+}
+```
+
+#### 4. Add Resource Management
+
+**Bandwidth Limiting:**
+```rust
+// Distribute bandwidth fairly across concurrent transfers
+struct BandwidthLimiter {
+    total_limit_mbps: u64,
+    active_transfers: Arc<AtomicUsize>,
+}
+
+impl BandwidthLimiter {
+    fn per_transfer_limit(&self) -> u64 {
+        let active = self.active_transfers.load(Ordering::Relaxed).max(1);
+        self.total_limit_mbps / active as u64
+    }
+}
+```
+
+**Connection Limiting:**
+```rust
+// Limit concurrent SSH connections to avoid overwhelming ESXi
+const MAX_SSH_CONNECTIONS_PER_HOST: usize = 8;
+
+struct EsxiConnectionPool {
+    connections: Arc<Mutex<HashMap<String, usize>>>,
+    max_per_host: usize,
+}
+```
+
+#### 5. Cleanup Guarantees
+
+```rust
+// Ensure cleanup happens even on panic or cancellation
+struct TransferCleanupGuard {
+    mount_path: PathBuf,
+    cleanup_done: Arc<AtomicBool>,
+}
+
+impl Drop for TransferCleanupGuard {
+    fn drop(&mut self) {
+        if !self.cleanup_done.load(Ordering::Relaxed) {
+            eprintln!("⚠ Emergency cleanup for {:?}", self.mount_path);
+            let _ = std::fs::remove_dir_all(&self.mount_path);
+        }
+    }
+}
+```
+
+### Expected Performance
+
+**Single Transfer:**
+- Speed: 65-115 MB/s
+- Memory: ~2MB buffer + 10MB overhead = ~12MB total
+
+**5 Concurrent Transfers:**
+- Combined speed: 325-575 MB/s (network limited)
+- Total memory: ~60MB (5 × 12MB)
+- ESXi CPU: Moderate (5 concurrent dd processes)
+
+**10 Concurrent Transfers:**
+- Combined speed: Limited by ESXi disk IOPS and network
+- Total memory: ~120MB (10 × 12MB)
+- ESXi CPU: High (10 concurrent dd processes)
+
+### Recommended Defaults
+
+- **Max concurrent transfers**: 4-6 (balances speed vs ESXi load)
+- **Memory overhead**: Plan for 15-20MB per transfer
+- **SSH connections**: Limit to 8 per ESXi host
+- **Network**: 1GbE can theoretically handle 9 concurrent 100MB/s transfers (but ESXi disk will be the bottleneck)
+
+### Testing Requirements
+
+Before production deployment, test:
+1. ✅ 2 concurrent transfers (basic concurrency)
+2. ✅ 5 concurrent transfers (medium load)
+3. ✅ 10 concurrent transfers (stress test)
+4. ✅ Failure handling (one fails, others continue)
+5. ✅ Cleanup verification (no orphaned mounts or processes)
+6. ✅ ESXi load monitoring (CPU, disk I/O, network)
+7. ✅ Progress reporting accuracy
+8. ✅ Cancellation and cleanup
+
+### Implementation Effort Estimate
+
+- **Minimal (spawn tasks)**: 30-60 minutes
+  - Wrap calls in `tokio::spawn()`
+  - Use `futures::future::join_all()` to wait
+  - No progress tracking or error handling
+
+- **Production-ready**: 6-8 hours
+  - Refactor to TransferHandle pattern
+  - Add ImportManager with coordination
+  - Implement progress monitoring
+  - Add resource limits and cleanup guarantees
+  - CLI batch import mode
+  - Comprehensive testing
+
+### Conclusion
+
+The 2MB buffer optimization makes simultaneous VM imports highly practical. With proper coordination and resource management, the tool can efficiently handle 5-10 concurrent imports, dramatically reducing total migration time for environments with multiple VMs.
+
+**Status**: Architecture designed, ready for implementation
+
+---
+
 **End of Document**
