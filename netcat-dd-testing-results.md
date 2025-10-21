@@ -22,6 +22,7 @@ PING 10.20.30.40 (10.20.30.40) 8928(8956) bytes of data.
 8936 bytes from 10.20.30.40: icmp_seq=2 ttl=64 time=0.116 ms
 8936 bytes from 10.20.30.40: icmp_seq=3 ttl=64 time=0.103 ms
 ```
+<br>
 
 **iperf3 test:**
 ```
@@ -36,6 +37,7 @@ PING 10.20.30.40 (10.20.30.40) 8928(8956) bytes of data.
 [ 20]   0.00-10.00  sec  3.38 GBytes  2.90 Gbits/sec                  receiver
 [SUM]   0.00-10.00  sec  26.4 GBytes  22.7 Gbits/sec                  receiver
 ```
+<br>
 
 **iperf3 reading disk on VMware and sending to Proxmox**
 Single Thread
@@ -48,6 +50,8 @@ Single Thread
 [  5]   0.00-30.01  sec  13.2 GBytes  3.79 Gbits/sec                  receiver
 ```
 
+<br>
+
 4 Threads
 ```bash
 /usr/lib/vmware/vsan/bin/iperf3.copy -c 10.20.30.41 -p 9001 -F /vmfs/volumes/nvme-storage/windows-test/windows-test-flat.vmdk -t 30 -P 4
@@ -56,6 +60,8 @@ Single Thread
 ```
 [SUM]   0.00-30.00  sec  26.5 GBytes  7.60 Gbits/sec                  receiver
 ```
+
+<br>
 
 8 Threads
 ```bash
@@ -66,6 +72,8 @@ Single Thread
 [SUM]   0.00-30.01  sec  32.3 GBytes  9.24 Gbits/sec                  receiver
 ```
 
+<br>
+
 16 Threads
 ```bash
 /usr/lib/vmware/vsan/bin/iperf3.copy -c 10.20.30.41 -p 9001 -F /vmfs/volumes/nvme-storage/windows-test/windows-test-flat.vmdk -t 30 -P 16
@@ -75,17 +83,21 @@ Single Thread
 [SUM]   0.00-30.01  sec  37.1 GBytes  10.6 Gbits/sec                  receiver
 ```
 
+<br>
+
 Reading from RAM on ESXi and writing to disk on Proxmox
 ```
 [SUM]   0.00-30.00  sec  58.9 GBytes  16.9 Gbits/sec                  receiver
 ```
 
+<br>
+
 **Built in ESXi import tool**
 736 seconds at ~140MiB/s
 
+<br>
 
-
-From here on out the first command is on ESXi and the second is on Proxmox
+⚠️ From here on out the first command is on ESXi and the second is on Proxmox
 #### Test 0
 Baseline dd+netcat to null
 ```bash
@@ -96,7 +108,10 @@ cat /dev/zero | nc -v -v -n 10.20.30.41 9001
 nc -l -p 9001 > /dev/null
 ```
 
+
 Watching on the Proxmox incoming port there is about 370-405MiB/s
+
+<br>
 
 #### Test 1
 Straight DD using blocksize of 4M over netcat
@@ -112,6 +127,8 @@ nc -l -p 9001 | dd of=/nvme-storage/test.vmdk bs=4M
 96636764160 bytes (97 GB, 90 GiB) copied, 293.057 s, 330 MB/s
 ```
 
+<br>
+
 DD with blocksize 4M -> pigz with default compression type -> netcat
 ```bash
 dd if=/vmfs/volumes/nvme-storage/windows-test/windows-test-flat.vmdk bs=4M | pigz -c | nc 10.20.30.41 9001
@@ -125,6 +142,8 @@ nc -l -p 9001 | pigz -d | dd of=/nvme-storage/test.vmdk bs=4M
 96636764160 bytes (97 GB, 90 GiB) copied, 361.495 s, 267 MB/s
 ```
 
+<br>
+
 DD with blocksize 4M -> pigz with byte size as 4M -> netcat
 ```bash
 dd if=/vmfs/volumes/nvme-storage/windows-test/windows-test-flat.vmdk bs=4M | pigz -c -b 4096 | nc 10.20.30.41 9001
@@ -133,6 +152,8 @@ dd if=/vmfs/volumes/nvme-storage/windows-test/windows-test-flat.vmdk bs=4M | pig
 ```bash
 nc -l -p 9001 | pigz -d | dd of=/nvme-storage/test.vmdk bs=4M
 ```
+
+<br>
 
 DD with blocksize 4M -> pigz with byte size as 4M and lowest compression level -> netcat
 ```bash
@@ -146,6 +167,8 @@ nc -l -p 9001 | pigz -d | dd of=/nvme-storage/test.vmdk bs=4M
 ```
 96636764160 bytes (97 GB, 90 GiB) copied, 187.611 s, 515 MB/s
 ```
+
+<br>
 
 DD with blocksize 4M -> pigz with byte size as 4M and lowest compression level, plus 32 cores dedicated to decompressing -> netcat
 ```bash
@@ -162,7 +185,10 @@ nc -l -p 9001 | pigz -d -p 32 | dd of=/nvme-storage/test.vmdk bs=4M
 
 Note: Even when defining how many processes to use on decompression, it only seems to actually use 4. This is also noted in the pigz documentation. 
 
+<br>
+
 #### Test 2
+
 Straight DD using blocksize of 8M over netcat
 ```bash
 dd if=/vmfs/volumes/nvme-storage/windows-test/windows-test-flat.vmdk bs=8M | nc 10.20.30.41 9001
@@ -176,10 +202,14 @@ nc -l -p 9001 | dd of=/nvme-storage/test.vmdk bs=8M
 96636764160 bytes (97 GB, 90 GiB) copied, 318.567 s, 303 MB/s
 ```
 
+<br>
+
 DD with blocksize 8M -> pigz with default compression type -> netcat
 ```
 96636764160 bytes (97 GB, 90 GiB) copied, 295.676 s, 327 MB/s
 ```
+
+<br>
 
 DD with blocksize 8M -> pigz with byte size as 4M -> netcat
 ```bash
@@ -190,10 +220,13 @@ dd if=/vmfs/volumes/nvme-storage/windows-test/windows-test-flat.vmdk bs=8M | pig
 96636764160 bytes (97 GB, 90 GiB) copied, 265.847 s, 364 MB/s
 ```
 
+<br>
+
 DD with blocksize 8M -> pigz with byte size as 4M and lowest compression level -> netcat
 ```bash
 dd if=/vmfs/volumes/nvme-storage/windows-test/windows-test-flat.vmdk bs=8M | pigz -1 -c -b 4096 | nc 10.20.30.41 9001
 ```
+
 
 ```bash
 nc -l -p 9001 | pigz -d | dd of=/nvme-storage/test.vmdk bs=8M
@@ -202,7 +235,11 @@ nc -l -p 9001 | pigz -d | dd of=/nvme-storage/test.vmdk bs=8M
 ```
 96636764160 bytes (97 GB, 90 GiB) copied, 204.974 s, 471 MB/s
 ```
+
+<br>
+
 #### Test 3
+
 Straight DD using blocksize of 16M over netcat
 ```bash
 dd if=/vmfs/volumes/nvme-storage/windows-test/windows-test-flat.vmdk bs=16M | nc 10.20.30.41 9001
@@ -216,6 +253,8 @@ nc -l -p 9001 | dd of=/nvme-storage/test.vmdk bs=16M
 96636764160 bytes (97 GB, 90 GiB) copied, 332.333 s, 291 MB/s
 ```
 
+<br>
+
 DD with blocksize 16M -> pigz with byte size as 4M and lowest compression level -> netcat
 ```bash
 dd if=/vmfs/volumes/nvme-storage/windows-test/windows-test-flat.vmdk bs=16M | pigz -1 -c -b 4096 | nc 10.20.30.41 9001
@@ -228,7 +267,11 @@ nc -l -p 9001 | pigz -d -p 32 | dd of=/nvme-storage/test.vmdk bs=16M
 ```
 96636764160 bytes (97 GB, 90 GiB) copied, 192.143 s, 503 MB/s
 ```
+
+<br>
+
 #### Test 4
+
 Straight DD using blocksize of 32M over netcat
 ```bash
 dd if=/vmfs/volumes/nvme-storage/windows-test/windows-test-flat.vmdk bs=32M | nc 10.20.30.41 9001
@@ -241,6 +284,8 @@ nc -l -p 9001 | dd of=/nvme-storage/test.vmdk bs=32M
 ```
 96636764160 bytes (97 GB, 90 GiB) copied, 317.241 s, 305 MB/s
 ```
+
+<br>
 
 DD with blocksize 32M -> pigz with byte size as 4M and lowest compression level -> netcat
 ```bash
@@ -255,6 +300,8 @@ nc -l -p 9001 | pigz -d -p 32 | dd of=/nvme-storage/test.vmdk bs=32M
 96636764160 bytes (97 GB, 90 GiB) copied, 196.749 s, 491 MB/s
 ```
 
+
+
 #### Extra Tests for the fun of it
 Using tar to stream the vmdk to pigz with low compression and then piped to netcat
 ```bash
@@ -267,10 +314,13 @@ nc -l -p 9001 | pigz -d -p 32 | tar -xvf -
 
 `210.0092 s, 438MiB/s`
 
+<br>
+<br>
 
 Multiple netcat streams at once, this is the same file on two different ports, but in theory you could read certain chunks of a file up and then create multiple dd+netcat streams to parallelize the whole process. 
 
 Note: Had to define the core count for the compress process, as by default it uses all of them. Split the 32 cores in half.
+
 
 ESXi:
 ```bash
@@ -280,6 +330,8 @@ dd if=/vmfs/volumes/nvme-storage/windows-test/windows-test-flat.vmdk bs=4M | pig
 ```bash
 dd if=/vmfs/volumes/nvme-storage/windows-test/windows-test-flat.vmdk bs=4M | pigz -1 -p 16 -c -b 4096 | nc 10.20.30.41 9002
 ```
+
+<br>
 
 PVE:
 ```bash
