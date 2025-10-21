@@ -7,6 +7,7 @@ Network: Intel E810-XXV 25GbE
 Storage: Samsung MZPLL1T6HEHP
 
 VM on the ESXi server is hitting the limits of what the SSD can do
+
 <img width="480" height="345" alt="Pasted image 20251021083245" src="https://github.com/user-attachments/assets/2f3619c7-f58b-4c7e-8a84-65eeff302bb0" />
 
 #### Baselines
